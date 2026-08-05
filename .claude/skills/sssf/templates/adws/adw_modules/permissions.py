@@ -31,6 +31,8 @@ Two keys drive it, both in sssf.config.yaml:
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -43,17 +45,38 @@ class PermissionBreach(RuntimeError):
 
 
 def _git(args: list[str], cwd) -> str:
-    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
     return result.stdout if result.returncode == 0 else ""
+
+
+def _untracked_fingerprint(repo_root: Path, path: str) -> str | None:
+    """Hash an untracked file independently of Git's mutable ignore rules."""
+    candidate = Path(repo_root) / path
+    try:
+        digest = hashlib.sha256()
+        if candidate.is_symlink():
+            digest.update(b"symlink\0")
+            digest.update(os.readlink(candidate).encode(errors="surrogateescape"))
+        elif candidate.is_file():
+            digest.update(b"file\0")
+            with candidate.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        else:
+            return None
+        return f"untracked:{digest.hexdigest()}"
+    except OSError:
+        return None
 
 
 def snapshot(run) -> dict[str, str]:
     """Fingerprint every path the working tree currently differs on.
 
     Tracked files carry their numstat counts, so an edit to an already-dirty
-    file still registers as a change. Untracked files are listed by name.
-    Gitignored paths never appear, which is why the session runtime under
-    `data_dir` — where handoff files legitimately land — needs no special case.
+    file still registers as a change. Untracked files carry a content hash so
+    they can be recognized even if a concurrent process changes Git's ignore
+    rules while the agent is running. Paths ignored at the initial snapshot
+    never appear, which keeps runtime files and build caches out of enforcement.
     """
     fingerprints: dict[str, str] = {}
     for line in _git(["diff", "HEAD", "--numstat"], run.repo_root).splitlines():
@@ -63,8 +86,10 @@ def snapshot(run) -> dict[str, str]:
             fingerprints[path] = f"{fields[0]},{fields[1]}"
     for path in _git(["ls-files", "--others", "--exclude-standard"],
                      run.repo_root).splitlines():
-        if path.strip():
-            fingerprints[path.strip()] = "untracked"
+        path = path.strip()
+        fingerprint = _untracked_fingerprint(run.repo_root, path)
+        if path and fingerprint is not None:
+            fingerprints[path] = fingerprint
     return fingerprints
 
 
@@ -149,14 +174,14 @@ def _roll_back(run, path: str, before: dict[str, str], after: dict[str, str]) ->
         # to reconstruct — say so loudly rather than pretend it was handled.
         return "REVERTED-BY-AGENT (uncommitted work lost, cannot restore)" \
             if path not in after else "left as-is (was already modified)"
-    if after.get(path) == "untracked":
+    if (after.get(path) or "").startswith("untracked:"):
         try:
             (Path(run.repo_root) / path).unlink()
             return "deleted"
         except OSError as error:
             return f"could not delete ({error})"
     result = subprocess.run(["git", "checkout", "--", path],
-                            cwd=run.repo_root, capture_output=True, text=True)
+                            cwd=run.repo_root, capture_output=True, text=True, check=False)
     return "rolled back" if result.returncode == 0 else "could not roll back"
 
 
@@ -171,6 +196,17 @@ def enforce(run, phase, agent: AgentConfig, before: dict[str, str]) -> list[str]
     is rolled back before the phase dies. What it cannot undo, it names.
     """
     after = snapshot(run)
+
+    # A path that was visible as untracked before the agent ran can disappear
+    # from `git ls-files --others --exclude-standard` merely because another
+    # process added an ignore rule. Re-hash those paths directly: unchanged
+    # content is unchanged state; changed or deleted content still breaches.
+    for path, fingerprint in before.items():
+        if path not in after and fingerprint.startswith("untracked:"):
+            current = _untracked_fingerprint(run.repo_root, path)
+            if current is not None:
+                after[path] = current
+
     touched = changed_paths(before, after)
     breaches = [p for p in touched if not permitted(p, agent, run.cfg)]
     if not breaches:
