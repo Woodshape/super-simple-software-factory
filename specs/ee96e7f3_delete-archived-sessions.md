@@ -2,74 +2,83 @@
 
 ## Objective
 
-Add an explicit, irreversible delete action to the visualizer's Archived collection. Deletion must be impossible for active/unarchived rows, remove every SQLite row owned by the session in one transaction, and remove the session's raw-data directory beside the selected database (`{dirname(sssf.db)}/sessions/{adw_id}`, normally `adws/adw_data/sessions/{id}`). Preserve archive/restore and normal session inspection.
+Add an explicit, irreversible delete action to the visualizer's Archived collection. The backend must independently enforce that only rows with `sessions.archived = 1` can be deleted, remove every SQLite row owned by the selected `adw_id`, and recursively remove the database-sibling `sessions/{adw_id}` directory (normally `adws/adw_data/sessions/{id}`). Archive/restore, session inspection, and polling must continue to work.
 
 ## Current-state findings
 
-- `SessionsList.vue` already polls active and archived collections, and `SessionCard.vue` changes its Archive action to Restore in archived mode, but there is no destructive action.
-- `server/index.ts` validates session IDs for archive and prompt-file routes; `SssfDb` derives `sessionsDir` from the target database's parent and lazily opens a writable connection only for archive changes.
-- The seven-table schema stores session-owned rows in `sessions`, `phases`, `events`, `envelopes`, `gate_results`, `processes`, and `agent_sessions`. References do not declare `ON DELETE CASCADE`, SQLite foreign-key enforcement is not enabled, and existing target databases cannot gain cascade clauses through the additive column migrations. Therefore deletion must perform a compatibility-safe, application-level transactional cascade rather than merely deleting the parent row or rewriting the tracer schema.
-- The visualizer and documentation still describe the service as read-only except for one archive write; those claims must be updated when permanent deletion is added.
+- `.claude/skills/sssf/apps/visualizer/src/components/SessionsList.vue` polls active and archived lists, and `SessionCard.vue` switches its single Archive button to Restore for archived cards. There is no destructive action or pending-action state.
+- `server/index.ts` already validates path-segment IDs for archive and prompt-file routes. The existing `GET /api/sessions/:adw_id` occupies the route that should also handle DELETE, so it must become a method map rather than adding a duplicate route key.
+- `SssfDb` derives `sessionsDir` from the selected database's parent and lazily opens a writable connection for archive changes.
+- The schema has seven session-owned tables: `sessions`, `phases`, `events`, `envelopes`, `gate_results`, `processes`, and `agent_sessions`. Their references have no `ON DELETE CASCADE`, foreign-key enforcement is not enabled, and additive migrations cannot retrofit cascade clauses into existing databases. Deletion therefore needs an explicit, transactional application-level cascade for compatibility with already-created databases.
+- The visualizer's comments and docs still characterize it as read-only or as having only the archive write; those descriptions become inaccurate once deletion is supported.
 
 ## Implementation plan
 
-### 1. Add one guarded backend deletion operation
+### 1. Add a guarded transactional deletion operation
 
-**Files:**
-- `.claude/skills/sssf/apps/visualizer/server/db.ts`
-- `.claude/skills/sssf/apps/visualizer/server/index.ts`
+**File:** `.claude/skills/sssf/apps/visualizer/server/db.ts`
 
-1. Add a `SssfDb.deleteArchivedSession(adwId)` operation with a small explicit result contract (deleted, not found, or not archived). Reuse the lazy writer and its busy timeout.
-2. Start a write transaction and re-read the target row inside it. Return not-found when no session exists and refuse the operation unless `archived = 1`; the archived predicate must be enforced in the persistence layer, not trusted from the current UI tab or a prior read.
-3. Delete all rows for that `adw_id` in dependency-safe order: `events`, `envelopes`, and `gate_results` before `phases`, plus `processes` and `agent_sessions`, then the `sessions` parent. Keep these deletes and the archive check in one transaction so a SQL error rolls everything back and another session is never affected. Do not alter `templates/adws/adw_modules/tracer.py` or attempt a table-rebuild migration solely to add foreign-key cascade clauses; explicit deletion is required for already-created databases.
-4. Include removal of the raw session directory in the same high-level operation. Resolve it only below `sessionsDir`, treating a missing directory as already cleaned. Use a staged rename/tombstone under that directory before committing the database transaction, restore the original name if the SQL transaction fails, and recursively remove the staged directory after commit. This keeps the requested path unavailable once deletion succeeds while providing a compensating rollback for failures before commit. Validate containment in depth even though the HTTP route also rejects unsafe IDs, and never follow an ID outside `sessionsDir`.
-5. Add `DELETE /api/sessions/:adw_id`. Apply the existing plain-segment validation before invoking deletion; return 400 for an unsafe ID, 404 for an unknown session, 409 with a clear “archive before deleting” error for an active/unarchived session, and a 200 JSON acknowledgement for success. Let unexpected database/filesystem failures flow through `safely` as 500 responses. Update server/database comments that currently call archive the sole write.
+1. Add `SssfDb.deleteArchivedSession(adwId)` with a small explicit outcome contract such as `deleted`, `not_found`, and `not_archived`. Reuse the existing lazy writable connection and busy timeout, updating names/comments that currently say it exists only for archive writes.
+2. Validate/resolve the raw-data target as exactly a child of `sessionsDir`, even though the HTTP layer also validates IDs. Never permit a direct method call to resolve outside the sessions root.
+3. In a write transaction, re-read the session and its `archived` value. Return not-found if the parent row does not exist, and refuse deletion unless the stored value is exactly archived. A legacy database with no `archived` column must also be refused rather than treated as deletable. Do not trust the UI's current tab or a stale pre-transaction read.
+4. Explicitly delete rows for only that `adw_id` in dependency-safe order: `events`, `envelopes`, and `gate_results` before `phases`; also delete `processes` and `agent_sessions`; then delete the `sessions` parent. Keep the archive check and all SQL deletes in one transaction so a statement failure rolls back the complete cascade. Do not rely on changing `tracer.py` to add foreign-key cascades, since that would not fix existing databases.
+5. Coordinate the raw directory with the SQL transaction using a same-parent tombstone/staging rename: treat a missing `{sessionsDir}/{adwId}` as already clean, rename an existing directory before committing the SQL deletion, restore its original name if staging or SQL/commit fails, and recursively remove the staged path after commit. This prevents the requested path from remaining visible after a successful delete and gives pre-commit failures a compensating filesystem rollback. Do not report success until post-commit cleanup has been attempted.
+6. Preserve isolation: no query or filesystem operation may affect another session, including similarly prefixed IDs.
 
-### 2. Expose a confirmed archived-only delete action
+### 2. Expose an archived-only DELETE endpoint
+
+**File:** `.claude/skills/sssf/apps/visualizer/server/index.ts`
+
+1. Refactor `/api/sessions/:adw_id` from its current catch-all handler into a Bun method map that preserves the existing GET detail behavior and adds `DELETE` on the same path.
+2. Validate the decoded ID with the existing safe-segment rule before calling the database operation. Map outcomes to stable responses: 200 JSON acknowledgement for deletion, 404 for an unknown session, 409 with a clear "archive before deleting"/unsupported-legacy message when the row is not archived, and 400 for an unsafe ID. Unexpected SQLite or filesystem failures should continue through `safely` as 500 responses.
+3. Update the server header and route comments so they describe both human-triggered mutations—archive/restore and permanent archived-session deletion—without implying there is still only one write.
+
+### 3. Add the confirmed destructive action to Archived cards
 
 **Files:**
 - `.claude/skills/sssf/apps/visualizer/src/lib/api.ts`
 - `.claude/skills/sssf/apps/visualizer/src/components/SessionsList.vue`
 - `.claude/skills/sssf/apps/visualizer/src/components/SessionCard.vue`
 
-1. Add a client `deleteSession(adwId)` wrapper that issues the encoded `DELETE` request and reports the API's error message/status on failure.
-2. In `SessionCard`, keep Archive as the only action for active cards. For archived cards, render separate Restore and destructive Delete buttons in an action group. Both handlers must prevent the surrounding card link from navigating, have explicit titles/ARIA labels, preserve keyboard access, and visually distinguish Delete as irreversible. Emit a dedicated delete event rather than overloading archive/restore.
-3. In `SessionsList`, handle deletion only while viewing Archived. Ask for explicit browser confirmation that names the session and says both trace/database data and files will be permanently removed. Track the pending session so repeated Delete/Restore clicks are disabled while the request runs.
-4. On success, remove the row from `archivedSessions` immediately and trigger the existing non-overlapping refresh to reconcile counts. On rejection or failure, retain/refetch the card and surface the error through `actionError`; an API caller bypassing the UI must still be unable to delete an unarchived row.
-5. Keep deletion off the detail view for this change: users inspect a run, return to Archived, and perform the deliberately scoped destructive action there. Do not add bulk deletion.
+1. Add a `deleteSession(adwId)` API wrapper that sends an encoded `DELETE /api/sessions/:adw_id`. Parse the API error payload when possible so a backend refusal is understandable instead of exposing only a status number.
+2. Keep active cards unchanged with only Archive. On archived cards, render Restore and a visually destructive Delete button in an action group. Emit a dedicated delete event; do not overload the archive/restore event. Both buttons must prevent the surrounding card link from navigating, remain keyboard-accessible, include explicit titles/ARIA labels, and support a disabled/busy state.
+3. In `SessionsList`, accept deletion only for a session currently present in the archived collection. Before calling the API, show an explicit browser confirmation naming the session and warning that both trace/database records and files are permanently removed.
+4. Track the session whose mutation is pending and disable repeat Restore/Delete actions for it. On success, remove it immediately from `archivedSessions` and trigger the existing non-overlapping refresh so tab counts and server state reconcile. On refusal/failure, retain or refetch the card and display the error through `actionError`.
+5. Keep the action scoped to individual cards in the Archived tab; do not add deletion to active cards, the detail view, or a bulk-delete flow.
 
-### 3. Document the new destructive boundary
+### 4. Update documentation and stale read-only descriptions
 
 **Files:**
 - `.claude/skills/sssf/references/observability.md`
 - `README.md`
 - `.claude/skills/sssf/apps/visualizer/package.json`
+- `.claude/skills/sssf/apps/visualizer/shared/types.ts`
+- comments in the backend files changed above
 
-1. Document the DELETE endpoint, archived-only invariant, status behavior, complete seven-table transactional cleanup, and removal of the database-sibling session directory. Clearly distinguish reversible Archive/Restore from irreversible Delete.
-2. Explain that the visualizer normally reads/polls SQLite but now has two human-triggered mutation capabilities: archive state changes and permanent archived-session deletion. Remove stale “read-only”/“one write” claims from the reference, README, package description, and source comments.
-3. Preserve the general files-as-raw-record/database-as-queryable-mirror model while noting that permanent deletion intentionally removes both representations for the selected archived session.
+1. Document the DELETE endpoint, the server-side archived-only invariant, response behavior, all seven deleted table projections, and recursive removal of `{dirname(sssf.db)}/sessions/{adw_id}`. Clearly distinguish reversible Archive/Restore from irreversible Delete.
+2. Replace claims that the visualizer is wholly read-only or has exactly one write with the narrower truth: normal observation is readonly/polled, while archive state and confirmed deletion are human-triggered mutations.
+3. Preserve the files-as-raw-record/database-as-queryable-mirror explanation, but state that permanent deletion intentionally removes both representations for the selected archived run. Adjust the package description and shared-types header accordingly.
 
-### 4. Add regression coverage and verify end to end
+### 5. Add regression coverage and verify end to end
 
-**Files:**
-- `.claude/skills/sssf/apps/visualizer/server/db.test.ts`
+**File:** `.claude/skills/sssf/apps/visualizer/server/db.test.ts`
 
-1. Expand the temporary WAL fixture to include all seven schema tables and a sibling `sessions/` tree. Seed two sessions so tests can prove isolation.
-2. Test successful deletion of an archived session containing rows in every dependent table and nested files: assert all seven table counts for that ID are zero, its directory is absent, and the other session's rows/files remain intact.
-3. Test that an active session is rejected with no database or filesystem changes; also cover unknown IDs, a missing raw-data directory, and a legacy database without the optional archived column so none can bypass the archived-only invariant.
-4. Exercise failure/rollback behavior where practical (for example, force a dependent SQL failure or filesystem staging failure) and assert no partial database cascade and no loss of the original session directory before commit.
+1. Expand the temporary WAL fixture to define all seven production tables and create sibling `sessions/` directory trees. Seed at least two sessions so every test can prove session isolation.
+2. Test successful deletion of an archived session with rows in every dependent table and nested files. Assert that all seven tables contain no rows for that ID, its exact directory is absent, and the control session's rows/files remain unchanged.
+3. Test that an unarchived session is refused with no database or filesystem changes. Also cover an unknown ID, a missing raw-data directory, and a legacy database without the optional `archived` column so none can bypass the archived-only rule.
+4. Exercise rollback by forcing a dependent SQL delete to fail (for example with a temporary trigger) after earlier child deletes/staging have begun. Assert that every row remains and the original session directory is restored, proving there is no partial cascade on pre-commit failure.
 5. From `.claude/skills/sssf/apps/visualizer`, run:
    - `bun test`
    - `bun run typecheck`
    - `bun run lint`
    - `bun run build`
-6. Smoke-test against a temporary target database: active DELETE returns 409 and changes nothing; after archive, confirmation/DELETE removes the card, all SQLite rows, and the exact session directory; repeating DELETE returns 404; archive, restore, card navigation, polling, and deletion of a different archived session continue to work.
+6. Smoke-test against a disposable target database and session tree: an active DELETE returns 409 and changes nothing; after archive, the UI confirmation/DELETE removes the archived card, every SQLite projection, and the exact session directory; repeating DELETE returns 404. Also verify archive, restore, card navigation, detail loading, and periodic polling still behave normally.
 
 ## Acceptance criteria
 
-- Delete is visible only on archived cards and requires an explicit irreversible-action confirmation.
-- The backend independently refuses every unarchived session, including direct API calls, without changing its rows or files.
-- A successful delete removes the session row and all rows with its `adw_id` from phases, events, envelopes, gate results, processes, and agent sessions, without affecting other sessions.
-- A successful delete removes `{dirname(sssf.db)}/sessions/{adw_id}` recursively; missing directories are harmless and unsafe IDs cannot escape the sessions root.
-- SQL cleanup is transactional and normal failure paths do not leave a partially deleted session.
-- Archive/restore, archived browsing, detail navigation, and list polling still work, and all automated checks pass.
+- Delete appears only on archived session cards and requires an explicit irreversible-action confirmation.
+- The backend refuses unarchived, legacy-without-archive-state, unknown, and unsafe IDs without deleting rows or files; direct API calls cannot bypass the invariant.
+- Successful deletion removes the session plus its rows from `phases`, `events`, `envelopes`, `gate_results`, `processes`, and `agent_sessions`, while leaving every other session untouched.
+- Successful deletion recursively removes `{dirname(sssf.db)}/sessions/{adw_id}`; a missing directory is harmless, and path traversal cannot escape the sessions root.
+- SQL cleanup is transactional, and failures before commit restore both database state and the original raw-data path.
+- Archive/restore, archived browsing, detail navigation, and polling remain functional, and all visualizer test/typecheck/lint/build commands pass.
