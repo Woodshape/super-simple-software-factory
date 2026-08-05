@@ -36,13 +36,23 @@ const nowMs = ref(Date.now())
 
 let cursor = 0
 let inflight = false
-let timer: ReturnType<typeof setInterval> | undefined
+let disposed = false
+let timer: ReturnType<typeof setTimeout> | undefined
 
+const EVENT_PAGE_LIMIT = 500
+const LIVE_POLL_MS = 500
+const RETRY_MS = 1000
 const SIDE_TABLE_TYPES = new Set(['gate_pass', 'gate_fail', 'handoff', 'agent_end', 'phase_end', 'error'])
 
+function schedule(delay: number) {
+  clearTimeout(timer)
+  if (!disposed) timer = setTimeout(() => void tick(), delay)
+}
+
 async function tick() {
-  if (inflight) return
+  if (inflight || disposed) return
   inflight = true
+  let nextDelay: number | null = null
   try {
     const detail = await fetchSession(props.adwId)
     session.value = detail.session
@@ -50,19 +60,15 @@ async function tick() {
     agents.value = detail.agents
     usage.value = detail.usage
 
-    const fresh: EventRow[] = []
-    let page
-    do {
-      // Cursor pagination is inherently sequential: each request needs the previous cursor.
-      // oxlint-disable-next-line no-await-in-loop
-      page = await fetchEvents(props.adwId, cursor, 1000)
-      cursor = Math.max(cursor, page.cursor)
-      fresh.push(...page.events)
-    } while (page.has_more)
+    // Exactly one bounded page is handled per turn. A backlog schedules its
+    // next cursor page immediately, while an exhausted live trace waits.
+    const page = await fetchEvents(props.adwId, cursor, EVENT_PAGE_LIMIT)
+    cursor = Math.max(cursor, page.cursor)
+    const fresh = page.events
     if (fresh.length) events.value = [...events.value, ...fresh]
 
     // Envelopes and gates only gain rows around phase/agent boundaries — refetch
-    // on those events instead of every tick.
+    // on those events instead of every poll.
     if (!loaded.value || fresh.some((e) => e.type !== null && SIDE_TABLE_TYPES.has(e.type))) {
       const [env, g] = await Promise.all([fetchEnvelopes(props.adwId), fetchGates(props.adwId)])
       envelopes.value = env
@@ -72,20 +78,23 @@ async function tick() {
     nowMs.value = Date.now()
     apiError.value = null
     loaded.value = true
+    // A completed session drains every cursor page, then becomes entirely
+    // static. A running session keeps one non-overlapping live poll alive.
+    nextDelay = page.has_more ? 0 : detail.session.status === 'running' ? LIVE_POLL_MS : null
   } catch (err) {
     apiError.value = err instanceof Error ? err.message : String(err)
+    nextDelay = RETRY_MS
   } finally {
     inflight = false
+    if (nextDelay !== null) schedule(nextDelay)
   }
 }
 
-onMounted(() => {
-  void tick()
-  timer = setInterval(() => void tick(), 500)
-})
+onMounted(() => void tick())
 
 onUnmounted(() => {
-  clearInterval(timer)
+  disposed = true
+  clearTimeout(timer)
   phaseCrumb.value = null
 })
 

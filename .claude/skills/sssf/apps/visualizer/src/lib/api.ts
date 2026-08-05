@@ -15,8 +15,26 @@ async function getJson(url: string): Promise<unknown> {
   return res.json()
 }
 
-export function fetchSessions(): Promise<SessionSummary[]> {
-  return getJson('/api/sessions') as Promise<SessionSummary[]>
+export async function fetchSessions(archived = false): Promise<SessionSummary[]> {
+  const data = await getJson(`/api/sessions?archived=${archived ? 1 : 0}`)
+  if (!Array.isArray(data)) return []
+  return data.map((value) => {
+    const row = value as Partial<SessionSummary>
+    const timeline = Array.isArray(row.timeline) ? row.timeline : []
+    const markerCount =
+      typeof row.timeline_marker_count === 'number' ? row.timeline_marker_count : timeline.length
+    return Object.assign(row, {
+      phases: Array.isArray(row.phases) ? row.phases : [],
+      phase_count: typeof row.phase_count === 'number' ? row.phase_count : 0,
+      agents: Array.isArray(row.agents) ? row.agents : [],
+      timeline,
+      timeline_marker_count: markerCount,
+      timeline_truncated:
+        typeof row.timeline_truncated === 'boolean'
+          ? row.timeline_truncated
+          : markerCount > timeline.length,
+    }) as SessionSummary
+  })
 }
 
 export async function fetchSession(adwId: string): Promise<SessionDetail> {

@@ -50,11 +50,13 @@ The gate event payload carries `attempt` too, so the `gate_results` table and th
 ```sql
 sessions (
   adw_id        TEXT PRIMARY KEY,
+  adw_name      TEXT,              -- ADW script(s) joined into the run
   request       TEXT,              -- the engineer's ask
   status        TEXT,              -- running | success | fail
   engineer      TEXT,
   started_at    TEXT, ended_at TEXT,
-  total_tokens  INTEGER, total_cost REAL
+  total_tokens  INTEGER, total_cost REAL,
+  archived      INTEGER DEFAULT 0  -- review state; 1 hides it from Active
 );
 
 phases (
@@ -145,14 +147,24 @@ PRAGMA busy_timeout=5000;
 
 WAL allows readers during writes. Writers are the tracers of running ADW processes; concurrent writers are fine given one small transaction per event plus `busy_timeout`. The visualizer reads on a readonly connection with exactly one exception: archiving a session (`POST /api/sessions/:adw_id/archive`) opens a second connection to set `sessions.archived`. That flag is review triage — it says a human has looked at the run — so it is the reader's state living on the row, and no tracer ever writes or reads it.
 
+## Visualizer lifecycle and exposure
+
+`just obs` is the supported launcher. It installs the visualizer dependencies, checks that the fixed ports are free, starts the API on `127.0.0.1:4600`, waits for `/api/health`, and only then starts Vite on `127.0.0.1:4601`. Neither listener is exposed beyond IPv4 loopback. A collision on either port fails startup instead of choosing another port; stopping the recipe or losing either child terminates and reaps both children.
+
+The stamped recipe passes the target repository's absolute db path to this lifecycle supervisor. `install.py` still stamps the template justfile only when absent unless `--force` is used.
+
 ## Polling contract
 
-**The UI never receives pushes.** No ingest endpoint, no WebSocket, no backfill or dedup logic.
+**The UI never receives pushes.** No ingest endpoint and no WebSocket.
 
-Live view polls on a rowid cursor every `observability.poll_ms` (default 500):
+The sessions screen has one polling owner and a constant request count. It requests the active and archived collections with `GET /api/sessions?archived=0|1` at a modest cadence. Each response embeds phases, agents, and at most 120 compact card markers per session. Those markers contain identity, attribution, type/name, and time only: no payloads or token data. High-volume histories are deterministically sampled across the full run while retaining their first and newest eligible activity, and the response says when the marker count was truncated. Cards never fetch event histories themselves.
+
+Archive state is explicit review state. `POST /api/sessions/:adw_id/archive` with `{"archived":true}` moves a run out of Active; `false` restores it. Archived runs remain available through the normal detail endpoint and can be inspected before restoration. Databases predating the optional column still expose their rows as active.
+
+The selected-session trace is the lossless stream. It polls one bounded rowid-cursor page at a time:
 
 ```sql
 SELECT ... FROM events WHERE adw_id = ? AND rowid > ? ORDER BY rowid LIMIT 500;
 ```
 
-Keep the highest `rowid` returned as the next cursor. History is **the same queries** with filters, lazy-paged as the engineer scrolls or drills in — one mechanism serves both live and past runs, which is why there is no separate replay path.
+Keep the highest `rowid` returned as the next cursor. Backlog pages are loaded sequentially without overlapping requests. A running trace continues polling; once session metadata changes out of `running`, the client drains the final event pages and stops. A completed history therefore eventually contains every event exactly once without polling forever. Only the card projection is sampled.

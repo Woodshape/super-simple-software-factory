@@ -56,6 +56,23 @@ export interface SessionSummary extends Session {
    * so an L1 card can color its per-agent dots without a request per card.
    */
   agents: AgentSession[];
+  /** Bounded, payload-free event projection used only by the card timeline. */
+  timeline: CardTimelineMarker[];
+  /** Number of eligible markers before timeline sampling. */
+  timeline_marker_count: number;
+  /** True when timeline is a sample rather than the complete eligible set. */
+  timeline_truncated: boolean;
+}
+
+/** The only event fields a session card needs. Detail views use Event instead. */
+export interface CardTimelineMarker {
+  rowid: number;
+  event_id: string;
+  adw_id: string;
+  phase_id: string | null;
+  type: EventType | null;
+  name: string | null;
+  started_at: string | null;
 }
 
 export interface Phase {

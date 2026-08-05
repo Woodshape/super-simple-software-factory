@@ -111,7 +111,9 @@ async function serveStatic(req: Request): Promise<Response> {
 }
 
 const server = Bun.serve({
+  hostname: "127.0.0.1",
   port: PORT,
+  reusePort: false,
   routes: {
     "/api/health": safely(
       () =>
@@ -123,7 +125,13 @@ const server = Bun.serve({
         } satisfies HealthResponse),
     ),
 
-    "/api/sessions": safely((req) => json(db.sessions(intQuery(req, "limit", 200)))),
+    "/api/sessions": safely((req) => {
+      const archived = new URL(req.url).searchParams.get("archived") ?? "0";
+      if (archived !== "0" && archived !== "1") {
+        return json({ error: "archived must be 0 or 1" } satisfies ApiError, 400);
+      }
+      return json(db.sessions(intQuery(req, "limit", 200), archived === "1"));
+    }),
 
     "/api/sessions/:adw_id": safely((req) => {
       const detail = db.sessionDetail(param(req, "adw_id"));
@@ -139,7 +147,10 @@ const server = Bun.serve({
           return json({ error: "invalid adw_id" } satisfies ApiError, 400);
         }
         const body = (await req.json().catch(() => ({}))) as { archived?: unknown };
-        const archived = body.archived === undefined ? true : Boolean(body.archived);
+        if (body.archived !== undefined && typeof body.archived !== "boolean") {
+          return json({ error: "archived must be a boolean" } satisfies ApiError, 400);
+        }
+        const archived = body.archived ?? true;
         return db.setArchived(adwId, archived)
           ? json({ adw_id: adwId, archived })
           : notFound(`no session ${adwId}`);
@@ -198,7 +209,7 @@ const server = Bun.serve({
   },
 });
 
-console.log(`[sssf] visualizer api  http://localhost:${server.port}`);
+console.log(`[sssf] visualizer api  http://127.0.0.1:${server.port}`);
 console.log(`[sssf] db              ${db.path}  [journal_mode=${db.journalMode}]`);
 console.log(
   existsSync(DIST_DIR)
@@ -206,7 +217,22 @@ console.log(
     : `[sssf] no ./dist — use "bun run dev" for the Vite dev server on :4601`,
 );
 
-process.on("SIGINT", () => {
-  db.close();
-  process.exit(0);
-});
+let shutdownPromise: Promise<void> | null = null;
+
+function shutdown(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    try {
+      await server.stop(true);
+    } finally {
+      db.close();
+    }
+  })();
+  return shutdownPromise;
+}
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    void shutdown().finally(() => process.exit(0));
+  });
+}
