@@ -1,80 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, shallowRef, watch } from 'vue'
-import type { EventRow, SessionSummary } from '../lib/types'
-import { archiveSession, fetchEvents } from '../lib/api'
+import { computed } from 'vue'
+import type { SessionSummary } from '../lib/types'
 import { axisTicks, fmtDate, fmtOffset, ts } from '../lib/format'
-import { agentColor, dotColor, eventLabel } from '../lib/events'
+import { agentColor, dotColor } from '../lib/events'
 import { hrefFor } from '../lib/router'
 import StatusChip from './StatusChip.vue'
 import StatChip from './StatChip.vue'
 import PhaseDots from './PhaseDots.vue'
 
-const props = defineProps<{ session: SessionSummary; nowMs: number }>()
-const emit = defineEmits<{ archived: [adwId: string] }>()
+const props = defineProps<{ session: SessionSummary; nowMs: number; archived: boolean }>()
+const emit = defineEmits<{ changeArchived: [adwId: string] }>()
 
-// The card is an <a>; the button lives inside it, so the click must not
-// navigate. Told the parent optimistically — the poll would take up to half a
-// second to drop the card, and a triage click should feel instant.
-async function archive(event: MouseEvent) {
+// The card is an <a>; keep the visible review action from navigating.
+function changeArchived(event: MouseEvent) {
   event.preventDefault()
   event.stopPropagation()
-  emit('archived', props.session.adw_id)
-  try {
-    await archiveSession(props.session.adw_id)
-  } catch {
-    emit('archived', '')   // signals the parent to re-sync from the server
-  }
+  emit('changeArchived', props.session.adw_id)
 }
-
-// Each card tails its own event stream: one full fetch on mount, then the
-// same rowid-cursor poll as the trace view — but only while the run is live.
-const events = shallowRef<EventRow[]>([])
-let cursor = 0
-let inflight = false
-let timer: ReturnType<typeof setInterval> | undefined
-
-function stopPolling() {
-  clearInterval(timer)
-  timer = undefined
-}
-
-async function pull() {
-  if (inflight) return
-  inflight = true
-  try {
-    const fresh: EventRow[] = []
-    let page
-    do {
-      // Cursor pagination is inherently sequential: each request needs the previous cursor.
-      // oxlint-disable-next-line no-await-in-loop
-      page = await fetchEvents(props.session.adw_id, cursor, 1000)
-      cursor = Math.max(cursor, page.cursor)
-      fresh.push(...page.events)
-    } while (page.has_more)
-    if (fresh.length) events.value = [...events.value, ...fresh]
-    if (props.session.status !== 'running') stopPolling()
-  } catch {
-    /* the list view surfaces api errors; a card just retries next poll */
-  } finally {
-    inflight = false
-  }
-}
-
-onMounted(() => {
-  void pull()
-  if (props.session.status === 'running') timer = setInterval(() => void pull(), 500)
-})
-
-onUnmounted(stopPolling)
-
-watch(
-  () => props.session.status,
-  (status) => {
-    if (status === 'running' && !timer) timer = setInterval(() => void pull(), 500)
-    // On the transition out of running, one last pull drains the tail and stops the timer.
-    else if (status !== 'running') void pull()
-  },
-)
 
 const running = computed(() => props.session.status === 'running')
 
@@ -82,12 +24,12 @@ const range = computed(() => {
   const s = props.session
   let t0 = ts(s.started_at)
   if (!Number.isFinite(t0)) {
-    t0 = Math.min(...events.value.map((e) => ts(e.started_at)).filter(Number.isFinite))
+    t0 = Math.min(...props.session.timeline.map((e) => ts(e.started_at)).filter(Number.isFinite))
   }
   if (!Number.isFinite(t0)) t0 = props.nowMs
   let t1 = running.value ? props.nowMs : ts(s.ended_at)
   if (!Number.isFinite(t1)) {
-    t1 = Math.max(...events.value.map((e) => ts(e.started_at)).filter(Number.isFinite))
+    t1 = Math.max(...props.session.timeline.map((e) => ts(e.started_at)).filter(Number.isFinite))
   }
   if (!Number.isFinite(t1)) t1 = t0 + 1000
   return { t0, span: Math.max(t1 - t0, 1000) }
@@ -126,7 +68,7 @@ const rows = computed<TimelineRow[]>(() => {
   let latest: TimelineDot | null = null
   let latestT = -Infinity
 
-  for (const e of events.value) {
+  for (const e of props.session.timeline) {
     const owner = e.phase_id ? ownerByPhase.get(e.phase_id) : undefined
     const color = dotColor(e.type)
     if (!owner || !color) continue
@@ -136,7 +78,7 @@ const rows = computed<TimelineRow[]>(() => {
       id: e.event_id,
       xPct: Math.min(Math.max(((t - t0) / span) * 100, 0), 100),
       color,
-      title: `${e.type} ${eventLabel(e)} at ${fmtOffset(t - t0)}`,
+      title: `${e.type} ${e.name ?? e.type ?? ''} at ${fmtOffset(t - t0)}`,
       latest: false,
     }
     byOwner.get(owner)?.push(dot)
@@ -191,17 +133,30 @@ const hiddenRowCount = computed(() =>
     <button
       class="card-archive"
       type="button"
-      title="Archive — remove this run from review"
-      aria-label="Archive run"
-      @click="archive"
+      :title="archived ? 'Restore this run to the active list' : 'Archive this run from the active list'"
+      :aria-label="archived ? 'Restore run' : 'Archive run'"
+      @click="changeArchived"
     >
-      ×
+      {{ archived ? 'Restore' : 'Archive' }}
     </button>
     <span class="card-id">{{ session.adw_id }}</span>
     <span class="card-adw" :title="session.adw_name ?? ''">{{ session.adw_name ?? '—' }}</span>
     <span class="card-req" :title="session.request ?? ''">{{ session.request }}</span>
 
-    <div v-if="rows.length" class="tl">
+    <div
+      v-if="rows.length"
+      class="tl"
+      :title="
+        session.timeline_truncated
+          ? `Timeline sampled: showing ${session.timeline.length} of ${session.timeline_marker_count} activity markers`
+          : `${session.timeline_marker_count} activity markers`
+      "
+      :aria-label="
+        session.timeline_truncated
+          ? `Sampled timeline showing ${session.timeline.length} of ${session.timeline_marker_count} activity markers`
+          : undefined
+      "
+    >
       <div class="tl-axis">
         <span class="tl-gutter" />
         <span class="tl-scale">
@@ -273,33 +228,21 @@ const hiddenRowCount = computed(() =>
 }
 
 .card-archive {
-  /* Top-right of the card, out of the text flow so nothing reflows around it. */
   position: absolute;
   top: 10px;
   right: 12px;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: 0;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: transparent;
+  background: var(--panel-2);
   color: var(--dim);
   font-family: inherit;
-  font-size: 20px;
-  line-height: 1;
+  font-size: 16px;
+  line-height: 1.2;
   cursor: pointer;
-  opacity: 0;
   transition:
-    opacity 0.15s ease,
     background 0.15s ease,
     color 0.15s ease;
-}
-
-/* Hidden until the card is hovered — 50 cards should read as runs, not as a
-   wall of close buttons. Focus reveals it too, so keyboards are not excluded. */
-.card:hover .card-archive,
-.card-archive:focus-visible {
-  opacity: 1;
 }
 
 .card-archive:hover {

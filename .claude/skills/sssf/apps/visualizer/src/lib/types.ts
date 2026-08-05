@@ -3,6 +3,7 @@
 export type {
   Session,
   SessionSummary,
+  CardTimelineMarker,
   SessionUsage,
   SessionDetail,
   Phase,

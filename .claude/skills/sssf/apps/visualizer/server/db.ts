@@ -17,6 +17,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import type {
   AgentSession,
   AgentStartPayload,
+  CardTimelineMarker,
   Envelope,
   Event,
   EventsPage,
@@ -31,6 +32,16 @@ import type {
 const DEFAULT_DB_RELATIVE = "adws/adw_data/sssf.db";
 const MAX_LIMIT = 1000;
 const DEFAULT_LIMIT = 500;
+/** Maximum payload-free event markers embedded in one session-list card. */
+export const CARD_TIMELINE_MARKER_LIMIT = 120;
+const CARD_TIMELINE_TYPES = [
+  "agent_start",
+  "tool_call",
+  "handoff",
+  "agent_end",
+  "error",
+  "gate_fail",
+] as const;
 
 /**
  * Resolve the db path: --db arg wins, then SSSF_DB, then <cwd>/adws/adw_data/sssf.db.
@@ -149,20 +160,24 @@ export class SssfDb {
     return this.session(adwId) !== null;
   }
 
-  /** Sessions, most recent first, each with its phase statuses for the progress dots. */
-  sessions(limit = 200): SessionSummary[] {
+  /** Sessions, most recent first, with all bounded card projections embedded. */
+  sessions(limit = 200, archived = false): SessionSummary[] {
+    const hasArchived = this.hasColumn("sessions", "archived");
+    // A legacy db has no archived collection, but its active rows still work.
+    if (archived && !hasArchived) return [];
+
     const rows = this.db
-      .query<Session, [number]>(
+      .query<Session, [number, number]>(
         `SELECT adw_id, ${this.optionalColumn("sessions", "adw_name")}, request,
                 status, engineer, started_at, ended_at,
                 total_tokens, total_cost,
                 ${this.optionalColumn("sessions", "archived")}
            FROM sessions
-          WHERE COALESCE(${this.hasColumn("sessions", "archived") ? "archived" : "0"}, 0) = 0
+          WHERE COALESCE(${hasArchived ? "archived" : "0"}, 0) = ?
           ORDER BY started_at DESC, rowid DESC
           LIMIT ?`,
       )
-      .all(clamp(limit, 1, MAX_LIMIT));
+      .all(archived ? 1 : 0, clamp(limit, 1, MAX_LIMIT));
 
     if (rows.length === 0) return [];
 
@@ -184,22 +199,77 @@ export class SssfDb {
       else byAdw.set(phase.adw_id, [phase]);
     }
 
-    // Agents come along too: an L1 card draws a per-agent dot timeline, and its
-    // dots are colored per agent — without this it would be one request per card.
+    // Agents and compact timeline markers come along too: the browser performs
+    // no per-card requests, regardless of how many sessions the list contains.
     const agentsByAdw = this.agentsFor(ids);
+    const timelineByAdw = this.cardTimelines(ids);
 
     const summaries: SessionSummary[] = [];
     for (const session of rows) {
       const phases = byAdw.get(session.adw_id) ?? [];
+      const projected = timelineByAdw.get(session.adw_id) ?? { markers: [], count: 0 };
       summaries.push(
         Object.assign(session, {
           phases,
           phase_count: phases.length,
           agents: agentsByAdw.get(session.adw_id) ?? [],
+          timeline: projected.markers,
+          timeline_marker_count: projected.count,
+          timeline_truncated: projected.count > projected.markers.length,
         }),
       );
     }
     return summaries;
+  }
+
+  /**
+   * One batched SQL projection for every card in a list response.
+   *
+   * Window ranks let SQLite return at most CARD_TIMELINE_MARKER_LIMIT rows per
+   * session even for huge traces. The deterministic buckets retain the first
+   * and newest eligible activity and spread the remaining markers over time.
+   */
+  private cardTimelines(
+    adwIds: string[],
+  ): Map<string, { markers: CardTimelineMarker[]; count: number }> {
+    const byAdw = new Map<string, { markers: CardTimelineMarker[]; count: number }>();
+    if (adwIds.length === 0) return byAdw;
+
+    const ids = adwIds.map(() => "?").join(", ");
+    const types = CARD_TIMELINE_TYPES.map(() => "?").join(", ");
+    const cap = CARD_TIMELINE_MARKER_LIMIT;
+    const rows = this.db
+      .query<CardTimelineMarker & { marker_count: number }, string[]>(
+        `WITH ranked AS (
+           SELECT rowid, event_id, adw_id, phase_id, type, name, started_at,
+                  COUNT(*) OVER (PARTITION BY adw_id) AS marker_count,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY adw_id ORDER BY started_at, rowid
+                  ) AS marker_rank
+             FROM events
+            WHERE adw_id IN (${ids}) AND type IN (${types})
+         )
+         SELECT rowid, event_id, adw_id, phase_id, type, name, started_at,
+                marker_count
+           FROM ranked
+          WHERE marker_count <= ${cap}
+             OR marker_rank = 1
+             OR CAST((marker_rank - 1) * (${cap} - 1) / (marker_count - 1) AS INTEGER)
+                > CAST((marker_rank - 2) * (${cap} - 1) / (marker_count - 1) AS INTEGER)
+          ORDER BY adw_id, started_at, rowid`,
+      )
+      .all(...adwIds, ...CARD_TIMELINE_TYPES);
+
+    for (const row of rows) {
+      let projection = byAdw.get(row.adw_id);
+      if (!projection) {
+        projection = { markers: [], count: row.marker_count };
+        byAdw.set(row.adw_id, projection);
+      }
+      const { marker_count: _markerCount, ...marker } = row;
+      projection.markers.push(marker);
+    }
+    return byAdw;
   }
 
   session(adwId: string): Session | null {
@@ -208,7 +278,8 @@ export class SssfDb {
         .query<Session, [string]>(
           `SELECT adw_id, ${this.optionalColumn("sessions", "adw_name")}, request,
                   status, engineer, started_at, ended_at,
-                  total_tokens, total_cost
+                  total_tokens, total_cost,
+                  ${this.optionalColumn("sessions", "archived")}
              FROM sessions WHERE adw_id = ?`,
         )
         .get(adwId) ?? null
