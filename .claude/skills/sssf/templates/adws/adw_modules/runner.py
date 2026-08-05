@@ -20,7 +20,7 @@ from .utils import ensure_dir, now_iso
 
 
 class PhaseHandle:
-    def __init__(self, run: "Run", phase: Phase):
+    def __init__(self, run: Run, phase: Phase):
         self.run = run
         self.phase = phase
 

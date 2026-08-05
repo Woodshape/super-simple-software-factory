@@ -9,7 +9,8 @@ that its final JSON response is parsed against. No untyped handoffs.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Literal, Optional, Type
+from collections.abc import Callable
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
@@ -62,9 +63,9 @@ class Phase(BaseModel):
     params: PhaseParams
     status: PhaseStatus = "fail"    # success must be earned
     attempt: int = 0
-    error: Optional[str] = None
-    started_at: Optional[str] = None
-    ended_at: Optional[str] = None
+    error: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 # ── Envelopes (agent output types) ───────────────────────────────────────────
@@ -270,7 +271,7 @@ class GateReport(BaseModel):
 
     checks: list[GateCheck] = Field(default_factory=list)
 
-    def check(self, item: str, ok: bool, note: str = "") -> "GateReport":
+    def check(self, item: str, ok: bool, note: str = "") -> GateReport:
         self.checks.append(GateCheck(item=item, ok=ok, note=note))
         return self
 
@@ -288,9 +289,9 @@ class AgentCall(BaseModel):
 
     model_config = {"arbitrary_types_allowed": True}
 
-    output_type: Type[EnvelopeBase]
+    output_type: type[EnvelopeBase]
     prompt: str
-    previous: Optional[EnvelopeBase] = None
+    previous: EnvelopeBase | None = None
     gates: list[Callable] = Field(default_factory=list)   # gate(envelope, run) -> list[str]
 
 
@@ -310,7 +311,7 @@ class AgentConfig(BaseModel):
     purpose: str = ""
     prompt_engineering: PromptEngineering
     harness_engineering: list[str] = Field(default_factory=list)
-    tools: Optional[list[str]] = None    # allowlist; None = all tools usable
+    tools: list[str] | None = None    # allowlist; None = all tools usable
     # What this agent may MODIFY in the repo, enforced in code after every call
     # (see adw_modules/permissions.py). `tools` cannot express this: `bash` runs
     # anything and `write` reaches any path, so an agent's capability list is a
@@ -319,7 +320,7 @@ class AgentConfig(BaseModel):
     #   []    -> read-only: may modify nothing tracked
     #   [...] -> only these. A trailing "/" means a directory prefix; a "*"
     #            makes it a glob; anything else is an exact path.
-    writes: Optional[list[str]] = None
+    writes: list[str] | None = None
 
 
 class ConfigDefaults(BaseModel):
@@ -328,7 +329,7 @@ class ConfigDefaults(BaseModel):
     thinking: str = "medium"
     color: str = ""
     harness_engineering: list[str] = Field(default_factory=list)
-    tools: Optional[list[str]] = None    # roster-wide allowlist; None = all tools usable
+    tools: list[str] | None = None    # roster-wide allowlist; None = all tools usable
     # Off-limits to every agent that has not named them in its own `writes`.
     # The factory's own code is the default: an agent must not be able to edit
     # the machinery that decides whether its work passed.
@@ -360,12 +361,12 @@ class EventRecord(BaseModel):
     name: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
     parent_id: str = ""
-    tokens: Optional[int] = None
+    tokens: int | None = None
     # Spans: set both when an event covers real elapsed time (a tool call), so
     # the UI lays it out on a time axis without parsing payload JSON. Left unset,
     # the tracer stamps started_at with the moment the event was recorded.
-    started_at: Optional[str] = None
-    ended_at: Optional[str] = None
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 # ── Pi coding agent interface ────────────────────────────────────────────────
@@ -380,7 +381,7 @@ class PiRequest(BaseModel):
     session_id: str                 # pi --session-id: creates or continues
     session_dir: str
     raw_output_path: str            # JSONL stream lands here
-    tools: Optional[list[str]] = None
+    tools: list[str] | None = None
     extensions: list[str] = Field(default_factory=list)
     cwd: str = "."                  # set from run.repo_root — the codebase root agents work in
 
@@ -427,7 +428,7 @@ class UsageBreakdown(BaseModel):
         self.cache_write_cost += cost.get("cacheWrite") or 0.0
         self.total_cost += cost.get("total") or 0.0
 
-    def merge(self, other: "UsageBreakdown") -> None:
+    def merge(self, other: UsageBreakdown) -> None:
         """Add another call's usage — a phase that retries spends more than once."""
         for field in self.model_fields:
             setattr(self, field, getattr(self, field) + getattr(other, field))
