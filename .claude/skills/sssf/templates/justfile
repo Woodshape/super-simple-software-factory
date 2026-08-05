@@ -63,9 +63,13 @@ simple-sdlc *ARGS:
 # ── watch it ────────────────────────────────────────────────────────────────
 # Reads never block a running workflow, the db is WAL. Poll as hard as you like.
 
-# the last 10 runs
+# the last 10 active runs
 sessions:
-    @sqlite3 {{db}} "select adw_id, status, substr(request,1,50), total_tokens, round(total_cost,4) from sessions order by started_at desc limit 10;"
+    @sqlite3 {{db}} "select adw_id, status, substr(request,1,50), total_tokens, round(total_cost,4) from sessions where coalesce(archived,0)=0 order by started_at desc limit 10;"
+
+# the last 10 archived runs
+archived-sessions:
+    @sqlite3 {{db}} "select adw_id, status, substr(request,1,50), total_tokens, round(total_cost,4) from sessions where coalesce(archived,0)=1 order by started_at desc limit 10;"
 
 # phase status in sequence: just phases <adw_id>
 phases ADW_ID:
