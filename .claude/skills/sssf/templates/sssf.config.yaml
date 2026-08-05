@@ -2,8 +2,8 @@
 # v1 runs the Pi coding agent only; coding_agent: claude_code arrives in v2.
 defaults:
   coding_agent: pi
-  model: google/gemini-3.6-flash   # provider/id — a bare pattern is ambiguous across providers
-  thinking: medium                 # off | minimal | low | medium | high | xhigh | max
+  model: openai-codex/gpt-5.6-luna   # provider/id — a bare pattern is ambiguous across providers
+  thinking: max                 # off | minimal | low | medium | high | xhigh | max
   harness_engineering: []          # pi extensions loaded into the harness (-e)
   # Roster-wide allowlist; any agent may override with its own list.
   # NOTE: --tools filters extension and custom tools too, not just builtins. An agent
@@ -38,7 +38,7 @@ observability:
 
 agents:
   - name: planner
-    model: fireworks/accounts/fireworks/models/kimi-k3
+    model: openai-codex/gpt-5.6-sol
     thinking: high
     color: "#a78bfa"                 # optional hex — the agent's lane color in the visualizer
     purpose: Turn a request into a plan the builder can implement without asking questions.
@@ -62,6 +62,8 @@ agents:
       - subagent_remove
 
   - name: builder
+    model: openai-codex/gpt-5.6-sol
+    thinking: high
     color: "#22d3ee"
     purpose: Implement the plan exactly; report every changed file in the envelope.
     prompt_engineering:
@@ -104,7 +106,7 @@ agents:
   # phase over adw_modules/quality.py. See SKILL.md hard rule 8.
 
   - name: reviewer
-    model: openai/gpt-5.6-terra
+    model: openai-codex/gpt-5.6-terra
     thinking: high
     color: "#fb7185"
     purpose: Confirm that what was built is what was asked for; change nothing.
@@ -122,7 +124,6 @@ agents:
       - write
 
   - name: documenter
-    model: openai/gpt-5.6-luna
     color: "#e879f9"
     purpose: Write up the change that was just made, from the diff; document only.
     prompt_engineering:
