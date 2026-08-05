@@ -101,9 +101,13 @@ rosters:
       ' "$f"
     done
 
-# recent sessions
+# recent active sessions
 sessions:
-    sqlite3 adws/adw_data/sssf.db "select adw_id, status, substr(request,1,60), total_tokens, round(total_cost,4) from sessions order by started_at desc limit 10;"
+    sqlite3 adws/adw_data/sssf.db "select adw_id, status, substr(request,1,60), total_tokens, round(total_cost,4) from sessions where coalesce(archived,0)=0 order by started_at desc limit 10;"
+
+# recent archived sessions
+archived-sessions:
+    sqlite3 adws/adw_data/sssf.db "select adw_id, status, substr(request,1,60), total_tokens, round(total_cost,4) from sessions where coalesce(archived,0)=1 order by started_at desc limit 10;"
 
 # phases for one adw: just phases <adw_id>
 phases ADW_ID:
