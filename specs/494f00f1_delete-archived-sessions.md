@@ -1,5 +1,5 @@
 ---
-status: in_progress
+status: complete
 ---
 
 # Implement permanent deletion for archived visualizer sessions
