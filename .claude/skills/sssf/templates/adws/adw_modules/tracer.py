@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS gate_results (
 CREATE TABLE IF NOT EXISTS processes (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   adw_id        TEXT REFERENCES sessions,
-  kind          TEXT,                -- 'adw' (the workflow process) | 'agent' (a coding-agent child)
+  kind          TEXT,                -- 'adw' | configured 'agent' | nested 'subagent'
   name          TEXT,                -- '' for the adw, the agent name for a child
   pid           INTEGER,
   command       TEXT,                -- what the pid was, so a recycled pid is not killed by mistake
@@ -87,6 +87,35 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   created_at    TEXT, last_used_at TEXT,
   PRIMARY KEY (adw_id, agent)
 );
+CREATE TABLE IF NOT EXISTS subagents (
+  subagent_id TEXT PRIMARY KEY,
+  adw_id TEXT REFERENCES sessions, phase_id TEXT REFERENCES phases,
+  parent_agent TEXT, display_id INTEGER, parent_tool_call_id TEXT, parent_event_id TEXT,
+  task TEXT, session_path TEXT, status TEXT,
+  created_at TEXT, started_at TEXT, ended_at TEXT, duration_ms INTEGER,
+  removed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_subagents_adw ON subagents(adw_id, created_at);
+CREATE TABLE IF NOT EXISTS subagent_turns (
+  turn_id TEXT PRIMARY KEY, subagent_id TEXT REFERENCES subagents,
+  adw_id TEXT, phase_id TEXT, turn INTEGER,
+  parent_tool_call_id TEXT, parent_event_id TEXT,
+  prompt TEXT, model TEXT, thinking TEXT, pid INTEGER,
+  status TEXT, started_at TEXT, ended_at TEXT, duration_ms INTEGER,
+  result TEXT, error TEXT, tool_count INTEGER DEFAULT 0,
+  raw_output_path TEXT, session_path TEXT,
+  start_telemetry_id TEXT UNIQUE, finish_telemetry_id TEXT UNIQUE,
+  UNIQUE(subagent_id, turn)
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_turns_child ON subagent_turns(subagent_id, turn);
+CREATE TABLE IF NOT EXISTS subagent_activities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  telemetry_id TEXT UNIQUE, activity_id TEXT,
+  subagent_id TEXT REFERENCES subagents, adw_id TEXT, turn INTEGER,
+  tool_call_id TEXT, tool TEXT, args_json TEXT, result_snippet TEXT, ok INTEGER,
+  started_at TEXT, ended_at TEXT, duration_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_activity_child ON subagent_activities(adw_id, subagent_id, id);
 """
 
 # Columns added after a schema shipped. CREATE TABLE IF NOT EXISTS never
@@ -158,10 +187,19 @@ class Tracer:
                           (request[:500], adw_id))
 
     def session_finish(self, adw_id: str, ok: bool) -> None:
+        ended = now_iso()
         self.conn.execute(
             "UPDATE sessions SET status=?, ended_at=? WHERE adw_id=?",
-            ("success" if ok else "fail", now_iso(), adw_id),
+            ("success" if ok else "fail", ended, adw_id),
         )
+        # A parent can be terminated before its extension's close callback. Do
+        # not leave historical nested runs falsely live in that case.
+        self.conn.execute(
+            "UPDATE subagent_turns SET status='interrupted', ended_at=? "
+            "WHERE adw_id=? AND status='running'", (ended, adw_id))
+        self.conn.execute(
+            "UPDATE subagents SET status='interrupted', ended_at=? "
+            "WHERE adw_id=? AND status='running'", (ended, adw_id))
         self.processes_end_all(adw_id)   # nothing of this run is alive any more
 
     def session_add_usage(self, adw_id: str, tokens: int, cost: float) -> None:
@@ -227,6 +265,117 @@ class Tracer:
              p.description, phase.status, phase.attempt, p.retries, phase.error,
              phase.started_at, phase.ended_at),
         )
+
+    # ── nested subagents ────────────────────────────────────────────────────
+    def ingest_subagent(self, record: dict) -> None:
+        """Idempotently mirror one validated extension telemetry record."""
+        kind = record.get("kind")
+        child = str(record.get("subagent_id") or "")
+        if not child:
+            return
+        adw_id = str(record.get("adw_id") or "")
+        phase_id = str(record.get("phase_id") or "")
+        call_id = record.get("parent_tool_call_id")
+        parent_event = self._subagent_parent_event(adw_id, call_id)
+        ts = str(record.get("ts") or now_iso())
+
+        if kind == "subagent.created":
+            self.conn.execute(
+                "INSERT INTO subagents (subagent_id,adw_id,phase_id,parent_agent,display_id,"
+                "parent_tool_call_id,parent_event_id,task,session_path,status,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,'running',?) ON CONFLICT(subagent_id) DO NOTHING",
+                (child, adw_id, phase_id, record.get("parent_agent"), record.get("display_id"),
+                 call_id, parent_event, record.get("task"), record.get("session_path"), ts))
+            return
+
+        if kind == "turn.started":
+            turn = int(record.get("turn") or 1)
+            turn_id = f"{child}:{turn}"
+            started = str(record.get("started_at") or ts)
+            self.conn.execute(
+                "INSERT INTO subagent_turns (turn_id,subagent_id,adw_id,phase_id,turn,"
+                "parent_tool_call_id,parent_event_id,prompt,model,thinking,pid,status,started_at,"
+                "raw_output_path,session_path,start_telemetry_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,'running',?,?,?,?) "
+                "ON CONFLICT(subagent_id,turn) DO NOTHING",
+                (turn_id, child, adw_id, phase_id, turn, call_id, parent_event,
+                 record.get("prompt"), record.get("model"), record.get("thinking"),
+                 record.get("pid"), started, record.get("raw_output_path"),
+                 record.get("session_path"), record.get("telemetry_id")))
+            self.conn.execute(
+                "UPDATE subagents SET status='running',started_at=COALESCE(started_at,?),"
+                "task=?,parent_tool_call_id=COALESCE(parent_tool_call_id,?),"
+                "parent_event_id=COALESCE(parent_event_id,?) WHERE subagent_id=?",
+                (started, record.get("prompt"), call_id, parent_event, child))
+            pid = record.get("pid")
+            exists = self.conn.execute(
+                "SELECT 1 FROM processes WHERE adw_id=? AND kind='subagent' AND name=? AND pid=?",
+                (adw_id, turn_id, pid)).fetchone()
+            if pid and not exists:
+                self.process_start(adw_id, "subagent", turn_id, int(pid),
+                                   f"pi nested {child} turn {turn}")
+            return
+
+        if kind == "activity.completed":
+            args = record.get("args") if isinstance(record.get("args"), dict) else {}
+            inserted = self.conn.execute(
+                "INSERT OR IGNORE INTO subagent_activities "
+                "(telemetry_id,activity_id,subagent_id,adw_id,turn,tool_call_id,tool,args_json,"
+                "result_snippet,ok,started_at,ended_at,duration_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (record.get("telemetry_id"), record.get("activity_id"), child, adw_id,
+                 record.get("turn"), record.get("tool_call_id"), record.get("tool"),
+                 json.dumps(args), record.get("result_snippet"), int(bool(record.get("ok"))),
+                 record.get("started_at"), record.get("ended_at"), record.get("duration_ms")))
+            if inserted.rowcount:
+                self.conn.execute(
+                    "UPDATE subagent_turns SET tool_count=COALESCE(tool_count,0)+1 "
+                    "WHERE subagent_id=? AND turn=?",
+                    (child, record.get("turn")))
+            return
+
+        if kind == "turn.finished":
+            turn = int(record.get("turn") or 1)
+            ended = str(record.get("ended_at") or ts)
+            # finish_telemetry_id makes duplicate final drains harmless.
+            self.conn.execute(
+                "UPDATE subagent_turns SET status=?,ended_at=?,duration_ms=?,result=?,error=?,"
+                "tool_count=?,finish_telemetry_id=? WHERE subagent_id=? AND turn=? "
+                "AND finish_telemetry_id IS NULL",
+                (record.get("status") or "error", ended, record.get("duration_ms"),
+                 record.get("result"), record.get("error"), record.get("tool_count") or 0,
+                 record.get("telemetry_id"), child, turn))
+            self.conn.execute(
+                "UPDATE subagents SET status=?,ended_at=?,duration_ms=("
+                "SELECT SUM(COALESCE(duration_ms,0)) FROM subagent_turns WHERE subagent_id=?) "
+                "WHERE subagent_id=?",
+                (record.get("status") or "error", ended, child, child))
+            if record.get("pid"):
+                self.process_end(adw_id, int(record["pid"]))
+            return
+
+        if kind == "subagent.removed":
+            self.conn.execute("UPDATE subagents SET removed_at=? WHERE subagent_id=? AND adw_id=?",
+                              (record.get("removed_at") or ts, child, adw_id))
+
+    def link_subagent_parent(self, adw_id: str, tool_call_id: str, event_id: str) -> None:
+        """Resolve parent links whether telemetry or the parent tool event arrived first."""
+        if not tool_call_id:
+            return
+        self.conn.execute(
+            "UPDATE subagents SET parent_event_id=? WHERE adw_id=? AND parent_tool_call_id=?",
+            (event_id, adw_id, tool_call_id))
+        self.conn.execute(
+            "UPDATE subagent_turns SET parent_event_id=? WHERE adw_id=? AND parent_tool_call_id=?",
+            (event_id, adw_id, tool_call_id))
+
+    def _subagent_parent_event(self, adw_id: str, tool_call_id) -> str | None:
+        if not tool_call_id:
+            return None
+        row = self.conn.execute(
+            "SELECT event_id FROM events WHERE adw_id=? "
+            "AND json_extract(payload_json,'$.tool_call_id')=? ORDER BY rowid DESC LIMIT 1",
+            (adw_id, tool_call_id)).fetchone()
+        return row[0] if row else None
 
     # ── envelopes / gates / agent sessions ──────────────────────────────────
     def envelope_row(self, phase: Phase, agent: str, output_type: str,

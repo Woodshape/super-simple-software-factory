@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
+import threading
 import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
 from .data_types import PiRequest, PiResult
+from .subagent_observability import ENV_NAME, TelemetryTail
 from .utils import now_iso, operator_env
 
 PI_PATH = os.environ.get("PI_PATH", "pi")
@@ -240,23 +243,61 @@ def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
     # EOF. That failure is silent and total: no request goes out, no bytes come
     # back, and the ADW blocks on a read loop with nothing to read. Observed as
     # a run that sat idle at 0% CPU with an empty raw_output.jsonl.
+    env = operator_env()
+    tail = None
+    if request.trace_context:
+        env[ENV_NAME] = request.trace_context.model_dump_json()
+        tail = TelemetryTail(request.trace_context)
     process = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True, bufsize=1, cwd=request.cwd,
-                               env=operator_env())
+                               text=True, bufsize=1, cwd=request.cwd, env=env)
     if on_spawn:
         on_spawn(process.pid)
-    with raw_path.open("a") as raw:
+
+    lines: queue.Queue[str | None] = queue.Queue()
+    stderr_chunks: list[str] = []
+
+    def read_stdout() -> None:
         assert process.stdout is not None
-        for line in process.stdout:
+        for output_line in process.stdout:
+            lines.put(output_line)
+        lines.put(None)
+
+    def read_stderr() -> None:
+        if process.stderr:
+            for error_line in process.stderr:
+                stderr_chunks.append(error_line)
+
+    threading.Thread(target=read_stdout, daemon=True).start()
+    threading.Thread(target=read_stderr, daemon=True).start()
+
+    def forward_nested() -> None:
+        if tail and on_event:
+            for nested in tail.read():
+                on_event(nested)
+
+    stdout_done = False
+    with raw_path.open("a") as raw:
+        while not stdout_done:
+            try:
+                line = lines.get(timeout=0.05)
+            except queue.Empty:
+                forward_nested()
+                continue
+            if line is None:
+                stdout_done = True
+                forward_nested()
+                continue
             raw.write(line)
             raw.flush()                      # events land on disk as they happen
-            line = line.strip()
-            if not line:
+            stripped = line.strip()
+            if not stripped:
+                forward_nested()
                 continue
             try:
-                event = json.loads(line)
+                event = json.loads(stripped)
             except json.JSONDecodeError:
+                forward_nested()
                 continue
             if event.get("type") == "message_end":
                 message = event.get("message", {})
@@ -268,17 +309,20 @@ def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
                     turn = _context_tokens(usage)
                     result.tokens += turn
                     result.usage.add_turn(usage, turn)
-                    # Occupancy is read off the last VALID assistant turn, the
-                    # way pi does it — an aborted or errored turn reports usage
-                    # you can't trust, so it must not overwrite a good reading.
                     if turn and message.get("stopReason") not in ("aborted", "error"):
                         result.context_tokens = turn
                     result.cost += (usage.get("cost", {}) or {}).get("total", 0.0) or 0.0
             if on_event:
                 on_event(event)
+            forward_nested()
 
-    stderr = process.stderr.read() if process.stderr else ""
     result.returncode = process.wait()
+    # Child close handlers can append their terminal telemetry just after the
+    # parent stdout closes; one final bounded drain captures it.
+    for _ in range(3):
+        forward_nested()
+        time.sleep(0.02)
+    stderr = "".join(stderr_chunks)
     if on_exit:
         on_exit(process.pid)
     if result.returncode != 0 and not result.text:

@@ -7,7 +7,11 @@ import type {
   PromptsResponse,
   SessionDetail,
   SessionSummary,
+  SubagentActivitiesPage,
+  SubagentDetail,
+  SubagentSummary,
 } from './types'
+import { normalizeSubagentDetail, normalizeSubagents } from './subagents'
 
 async function getJson(url: string): Promise<unknown> {
   const res = await fetch(url)
@@ -93,4 +97,32 @@ export function fetchEnvelopes(adwId: string): Promise<Envelope[]> {
 
 export function fetchGates(adwId: string): Promise<GateResult[]> {
   return getJson(`/api/sessions/${encodeURIComponent(adwId)}/gates`) as Promise<GateResult[]>
+}
+
+export async function fetchSubagents(adwId: string): Promise<SubagentSummary[]> {
+  const data = await getJson(`/api/sessions/${encodeURIComponent(adwId)}/subagents`)
+  return normalizeSubagents(data)
+}
+
+export async function fetchSubagent(adwId: string, childId: string): Promise<SubagentDetail> {
+  const data = await getJson(
+    `/api/sessions/${encodeURIComponent(adwId)}/subagents/${encodeURIComponent(childId)}`,
+  )
+  return normalizeSubagentDetail(data)
+}
+
+export async function fetchSubagentActivity(
+  adwId: string,
+  childId: string,
+  after: number,
+  limit = 200,
+): Promise<SubagentActivitiesPage> {
+  const data = (await getJson(
+    `/api/sessions/${encodeURIComponent(adwId)}/subagents/${encodeURIComponent(childId)}/activity?after=${after}&limit=${limit}`,
+  )) as SubagentActivitiesPage
+  return {
+    activities: Array.isArray(data.activities) ? data.activities : [],
+    cursor: typeof data.cursor === 'number' ? data.cursor : after,
+    has_more: data.has_more === true,
+  }
 }

@@ -23,6 +23,15 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { applyExtensionDefaults } from "./themeMap.ts";
+import {
+	ChildEventTracker,
+	TelemetryWriter,
+	appendRaw,
+	childPaths,
+	createSubagentId,
+	parseTraceContext,
+	writeResult,
+} from "./subagent_observability.ts";
 
 const FALLBACK_MODEL = "openrouter/google/gemini-3.5-flash";
 const THINKING_OVERRIDES = ["low", "medium", "high", "xhigh"] as const;
@@ -35,15 +44,19 @@ interface SpawnOptions {
 
 interface SubState {
 	id: number;
-	status: "running" | "done" | "error";
+	stableId: string;
+	status: "running" | "done" | "error" | "cancelled";
 	task: string;
 	textChunks: string[];
 	toolCount: number;
+	turnToolCount: number;
 	elapsed: number;
 	sessionFile: string;   // persistent JSONL session path — used by /subcont to resume
 	turnCount: number;     // increments each time /subcont continues this agent
 	model: string;
 	thinking: ThinkingLevel;
+	parentCallId?: string;
+	cancelRequested?: boolean;
 	proc?: any;            // active ChildProcess ref (for kill on /subrm)
 }
 
@@ -114,15 +127,32 @@ function parseCommandOptions(input: string): ParsedCommand {
 
 export default function (pi: ExtensionAPI) {
 	const agents: Map<number, SubState> = new Map();
+	const traceContext = parseTraceContext();
+	const telemetry = traceContext ? new TelemetryWriter(traceContext) : null;
 	let nextId = 1;
 	let widgetCtx: any;
 
 	// ── Session file helpers ──────────────────────────────────────────────────
 
-	function makeSessionFile(id: number): string {
+	function makeSessionFile(id: number, stableId: string): string {
+		if (traceContext) return childPaths(traceContext, stableId).sessionFile;
 		const dir = path.join(os.homedir(), ".pi", "agent", "sessions", "subagents");
 		fs.mkdirSync(dir, { recursive: true });
 		return path.join(dir, `subagent-${id}-${Date.now()}.jsonl`);
+	}
+
+	function makeState(id: number, task: string, parentCallId?: string): SubState {
+		const stableId = createSubagentId(id);
+		const sessionFile = makeSessionFile(id, stableId);
+		const state: SubState = {
+			id, stableId, status: "running", task, textChunks: [], toolCount: 0, turnToolCount: 0,
+			elapsed: 0, sessionFile, turnCount: 1, model: "", thinking: pi.getThinkingLevel(),
+			parentCallId,
+		};
+		telemetry?.emit("subagent.created", stableId, {
+			display_id: id, task, session_path: sessionFile, parent_tool_call_id: parentCallId ?? null,
+		});
+		return state;
 	}
 
 	// ── Widget rendering ──────────────────────────────────────────────────────
@@ -188,8 +218,9 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Streaming helpers ─────────────────────────────────────────────────────
 
-	function processLine(state: SubState, line: string) {
+	function processLine(state: SubState, line: string, tracker: ChildEventTracker, rawPath?: string) {
 		if (!line.trim()) return;
+		if (rawPath) appendRaw(rawPath, line);
 		try {
 			const event = JSON.parse(line);
 			const type = event.type;
@@ -202,8 +233,13 @@ export default function (pi: ExtensionAPI) {
 				}
 			} else if (type === "tool_execution_start") {
 				state.toolCount++;
+				state.turnToolCount++;
 				updateWidgets();
 			}
+			const activity = tracker.observe(event);
+			if (activity) telemetry?.emit("activity.completed", state.stableId, {
+				turn: state.turnCount, ...activity,
+			});
 		} catch {}
 	}
 
@@ -226,6 +262,9 @@ export default function (pi: ExtensionAPI) {
 		state.thinking = thinking;
 
 		return new Promise<void>((resolve) => {
+			const tracker = new ChildEventTracker();
+			const paths = traceContext ? childPaths(traceContext, state.stableId) : null;
+			const rawPath = paths?.turnRaw(state.turnCount);
 			const proc = spawn("pi", [
 				"--mode", "json",
 				"-p",
@@ -241,40 +280,61 @@ export default function (pi: ExtensionAPI) {
 			});
 
 			state.proc = proc;
+			state.cancelRequested = false;
 
 			const startTime = Date.now();
+			telemetry?.emit("turn.started", state.stableId, {
+				turn: state.turnCount, prompt, model, thinking, pid: proc.pid,
+				session_path: state.sessionFile, raw_output_path: rawPath ?? null,
+				parent_tool_call_id: state.parentCallId ?? null,
+				started_at: new Date(startTime).toISOString(),
+			});
 			const timer = setInterval(() => {
 				state.elapsed = Date.now() - startTime;
 				updateWidgets();
 			}, 1000);
 
 			let buffer = "";
+			let stderrText = "";
 
 			proc.stdout!.setEncoding("utf-8");
 			proc.stdout!.on("data", (chunk: string) => {
 				buffer += chunk;
 				const lines = buffer.split("\n");
 				buffer = lines.pop() || "";
-				for (const line of lines) processLine(state, line);
+				for (const line of lines) processLine(state, line, tracker, rawPath);
 			});
 
 			proc.stderr!.setEncoding("utf-8");
 			proc.stderr!.on("data", (chunk: string) => {
 				if (chunk.trim()) {
+					stderrText += chunk;
 					state.textChunks.push(chunk);
 					updateWidgets();
 				}
 			});
 
-			proc.on("close", (code) => {
-				if (buffer.trim()) processLine(state, buffer);
+			let spawnError = "";
+			let finalized = false;
+			const finish = (code: number | null) => {
+				if (finalized) return;
+				finalized = true;
+				if (buffer.trim()) processLine(state, buffer, tracker, rawPath);
 				clearInterval(timer);
 				state.elapsed = Date.now() - startTime;
-				state.status = code === 0 ? "done" : "error";
+				state.status = state.cancelRequested ? "cancelled" : code === 0 ? "done" : "error";
 				state.proc = undefined;
+				const result = tracker.result || state.textChunks.join("");
+				if (paths) writeResult(paths.turnResult(state.turnCount), result);
+				telemetry?.emit("turn.finished", state.stableId, {
+					turn: state.turnCount,
+					status: state.status === "done" ? "success" : state.status,
+					ended_at: new Date().toISOString(), duration_ms: state.elapsed,
+					result, error: spawnError || (code && code !== 0 ? (stderrText.trim() || `pi exited ${code}`) : null),
+					tool_count: state.turnToolCount, pid: proc.pid,
+				});
 				updateWidgets();
 
-				const result = state.textChunks.join("");
 				ctx.ui.notify(
 					`Subagent #${state.id} ${state.status} in ${Math.round(state.elapsed / 1000)}s`,
 					state.status === "done" ? "success" : "error"
@@ -285,17 +345,15 @@ export default function (pi: ExtensionAPI) {
 					content: `Subagent #${state.id}${state.turnCount > 1 ? ` (Turn ${state.turnCount})` : ""} finished "${prompt}" in ${Math.round(state.elapsed / 1000)}s.\n\nResult:\n${result.slice(0, 8000)}${result.length > 8000 ? "\n\n... [truncated]" : ""}`,
 					display: true,
 				}, { deliverAs: "followUp", triggerTurn: true });
-
 				resolve();
-			});
+			};
+
+			proc.on("close", (code) => finish(code));
 
 			proc.on("error", (err) => {
-				clearInterval(timer);
-				state.status = "error";
-				state.proc = undefined;
+				spawnError = err.message;
 				state.textChunks.push(`Error: ${err.message}`);
-				updateWidgets();
-				resolve();
+				finish(null);
 			});
 		});
 	}
@@ -317,18 +375,7 @@ export default function (pi: ExtensionAPI) {
 		execute: async (callId, args, _signal, _onUpdate, ctx) => {
 			widgetCtx = ctx;
 			const id = nextId++;
-			const state: SubState = {
-				id,
-				status: "running",
-				task: args.task,
-				textChunks: [],
-				toolCount: 0,
-				elapsed: 0,
-				sessionFile: makeSessionFile(id),
-				turnCount: 1,
-				model: "",
-				thinking: pi.getThinkingLevel(),
-			};
+			const state = makeState(id, args.task, callId);
 			agents.set(id, state);
 			updateWidgets();
 
@@ -368,7 +415,9 @@ export default function (pi: ExtensionAPI) {
 			state.task = args.prompt;
 			state.textChunks = [];
 			state.elapsed = 0;
+			state.turnToolCount = 0;
 			state.turnCount++;
+			state.parentCallId = callId;
 			updateWidgets();
 
 			ctx.ui.notify(`Continuing Subagent #${args.id} (Turn ${state.turnCount})…`, "info");
@@ -394,8 +443,10 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (state.proc && state.status === "running") {
+				state.cancelRequested = true;
 				state.proc.kill("SIGTERM");
 			}
+			telemetry?.emit("subagent.removed", state.stableId, { removed_at: new Date().toISOString() });
 			ctx.ui.setWidget(`sub-${args.id}`, undefined);
 			agents.delete(args.id);
 
@@ -442,18 +493,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const id = nextId++;
-			const state: SubState = {
-				id,
-				status: "running",
-				task,
-				textChunks: [],
-				toolCount: 0,
-				elapsed: 0,
-				sessionFile: makeSessionFile(id),
-				turnCount: 1,
-				model: "",
-				thinking: pi.getThinkingLevel(),
-			};
+			const state = makeState(id, task);
 			agents.set(id, state);
 			updateWidgets();
 
@@ -506,7 +546,9 @@ export default function (pi: ExtensionAPI) {
 			state.task = prompt;
 			state.textChunks = [];
 			state.elapsed = 0;
+			state.turnToolCount = 0;
 			state.turnCount++;
+			state.parentCallId = undefined;
 			updateWidgets();
 
 			ctx.ui.notify(`Continuing Subagent #${num} (Turn ${state.turnCount})…`, "info");
@@ -538,12 +580,14 @@ export default function (pi: ExtensionAPI) {
 
 			// Kill the process if still running
 			if (state.proc && state.status === "running") {
+				state.cancelRequested = true;
 				state.proc.kill("SIGTERM");
 				ctx.ui.notify(`Subagent #${num} killed and removed.`, "warning");
 			} else {
 				ctx.ui.notify(`Subagent #${num} removed.`, "info");
 			}
 
+			telemetry?.emit("subagent.removed", state.stableId, { removed_at: new Date().toISOString() });
 			ctx.ui.setWidget(`sub-${num}`, undefined);
 			agents.delete(num);
 		},
@@ -559,9 +603,11 @@ export default function (pi: ExtensionAPI) {
 			let killed = 0;
 			for (const [id, state] of Array.from(agents.entries())) {
 				if (state.proc && state.status === "running") {
+					state.cancelRequested = true;
 					state.proc.kill("SIGTERM");
 					killed++;
 				}
+				telemetry?.emit("subagent.removed", state.stableId, { removed_at: new Date().toISOString() });
 				ctx.ui.setWidget(`sub-${id}`, undefined);
 			}
 
@@ -582,6 +628,7 @@ export default function (pi: ExtensionAPI) {
 		applyExtensionDefaults(import.meta.url, ctx);
 		for (const [id, state] of Array.from(agents.entries())) {
 			if (state.proc && state.status === "running") {
+				state.cancelRequested = true;
 				state.proc.kill("SIGTERM");
 			}
 			ctx.ui.setWidget(`sub-${id}`, undefined);

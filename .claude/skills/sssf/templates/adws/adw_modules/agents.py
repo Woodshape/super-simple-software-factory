@@ -18,7 +18,7 @@ import yaml
 from . import agent_pi, permissions, prompts
 from .data_types import (AgentCall, AgentConfig, EnvelopeBase, EventRecord,
                          GateCheck, GateReport, Phase, PiRequest, SSSFConfig,
-                         UsageBreakdown)
+                         SubagentTraceContext, UsageBreakdown)
 from .utils import new_id
 
 JSON_FIX_ATTEMPTS = 2      # continue-with-correction attempts for malformed JSON
@@ -122,6 +122,13 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
             raw_output_path=str((agent_dir / "raw_output.jsonl").resolve()),
             tools=agent.tools,
             extensions=agent.harness_engineering,
+            trace_context=SubagentTraceContext(
+                adw_id=run.adw_id,
+                phase_id=phase.phase_id,
+                parent_agent=agent.name,
+                root=str((agent_dir / "subagents").resolve()),
+                telemetry_path=str((agent_dir / "subagents" / "telemetry.jsonl").resolve()),
+            ),
             cwd=str(run.repo_root),
         )
         result = agent_pi.run(
@@ -237,16 +244,22 @@ def _event_forwarder(run, phase: Phase, agent_name: str):
     tracker = agent_pi.ToolCallTracker()
 
     def forward(event: dict) -> None:
+        if event.get("protocol") == "sssf.subagents.v1":
+            run.tracer.ingest_subagent(event)
+            return
         record = tracker.observe(event)
         if record is None:
             return
         # The call's span rides the columns; duration_ms stays in the payload as
         # pi's own authoritative number.
-        run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
-                                     type="tool_call", name=record.pop("label"),
-                                     started_at=record.pop("started_at", None),
-                                     ended_at=record.pop("ended_at", None),
-                                     payload={**record, "agent": agent_name}))
+        tool_call_id = str(record.get("tool_call_id") or "")
+        event_id = run.tracer.event(EventRecord(
+            adw_id=run.adw_id, phase_id=phase.phase_id,
+            type="tool_call", name=record.pop("label"),
+            started_at=record.pop("started_at", None),
+            ended_at=record.pop("ended_at", None),
+            payload={**record, "agent": agent_name}))
+        run.tracer.link_subagent_parent(run.adw_id, tool_call_id, event_id)
     return forward
 
 
