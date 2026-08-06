@@ -8,14 +8,30 @@ import StatusChip from './StatusChip.vue'
 import StatChip from './StatChip.vue'
 import PhaseDots from './PhaseDots.vue'
 
-const props = defineProps<{ session: SessionSummary; nowMs: number; archived: boolean }>()
-const emit = defineEmits<{ changeArchived: [adwId: string] }>()
+type PendingAction = 'archive' | 'restore' | 'delete'
 
-// The card is an <a>; keep the visible review action from navigating.
+const props = defineProps<{
+  session: SessionSummary
+  nowMs: number
+  archived: boolean
+  pendingAction?: PendingAction | null
+}>()
+const emit = defineEmits<{
+  changeArchived: [adwId: string]
+  deleteSession: [adwId: string]
+}>()
+
+// The card is an <a>; keep visible review actions from navigating.
 function changeArchived(event: MouseEvent) {
   event.preventDefault()
   event.stopPropagation()
   emit('changeArchived', props.session.adw_id)
+}
+
+function deleteSession(event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  emit('deleteSession', props.session.adw_id)
 }
 
 const running = computed(() => props.session.status === 'running')
@@ -130,15 +146,31 @@ const hiddenRowCount = computed(() =>
 
 <template>
   <a class="card" :class="session.status" :href="hrefFor(session.adw_id)">
-    <button
-      class="card-archive"
-      type="button"
-      :title="archived ? 'Restore this run to the active list' : 'Archive this run from the active list'"
-      :aria-label="archived ? 'Restore run' : 'Archive run'"
-      @click="changeArchived"
-    >
-      {{ archived ? 'Restore' : 'Archive' }}
-    </button>
+    <div class="card-actions">
+      <button
+        class="card-action"
+        type="button"
+        :disabled="Boolean(pendingAction)"
+        :aria-busy="pendingAction === (archived ? 'restore' : 'archive')"
+        :title="archived ? 'Restore this run to the active list' : 'Archive this run from the active list'"
+        :aria-label="archived ? 'Restore run' : 'Archive run'"
+        @click="changeArchived"
+      >
+        {{ pendingAction === (archived ? 'restore' : 'archive') ? (archived ? 'Restoring…' : 'Archiving…') : archived ? 'Restore' : 'Archive' }}
+      </button>
+      <button
+        v-if="archived"
+        class="card-action card-delete"
+        type="button"
+        :disabled="Boolean(pendingAction)"
+        :aria-busy="pendingAction === 'delete'"
+        title="Permanently delete this archived run and its files"
+        aria-label="Permanently delete run"
+        @click="deleteSession"
+      >
+        {{ pendingAction === 'delete' ? 'Deleting…' : 'Delete' }}
+      </button>
+    </div>
     <span class="card-id">{{ session.adw_id }}</span>
     <span class="card-adw" :title="session.adw_name ?? ''">{{ session.adw_name ?? '—' }}</span>
     <span class="card-req" :title="session.request ?? ''">{{ session.request }}</span>
@@ -214,7 +246,7 @@ const hiddenRowCount = computed(() =>
   flex-direction: column;
   gap: 10px;
   padding: 20px 22px;
-  position: relative;          /* anchors the archive button */
+  position: relative;          /* anchors the review action group */
   border: 1px solid var(--border-soft);
   border-radius: 16px;
   background: var(--surface);
@@ -227,10 +259,15 @@ const hiddenRowCount = computed(() =>
     transform 0.18s ease;
 }
 
-.card-archive {
+.card-actions {
   position: absolute;
   top: 10px;
   right: 12px;
+  display: flex;
+  gap: 6px;
+}
+
+.card-action {
   padding: 4px 9px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -245,9 +282,23 @@ const hiddenRowCount = computed(() =>
     color 0.15s ease;
 }
 
-.card-archive:hover {
+.card-action:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.card-delete {
+  border-color: rgba(255, 111, 103, 0.5);
+  color: #ff6f67;
+}
+
+.card-delete:hover:not(:disabled) {
   background: rgba(255, 111, 103, 0.16);
   color: #ff6f67;
+}
+
+.card-action:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .card:hover {

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { CARD_TIMELINE_MARKER_LIMIT, SssfDb } from "./db.ts";
 
 const tempDirs: string[] = [];
@@ -87,6 +87,60 @@ function insertEvent(
     );
 }
 
+const DELETION_TABLES = [
+  "sessions",
+  "phases",
+  "events",
+  "envelopes",
+  "gate_results",
+  "processes",
+  "agent_sessions",
+  "subagents",
+  "subagent_turns",
+  "subagent_activities",
+] as const;
+
+function deletionFixture(): { dir: string; path: string; setup: Database } {
+  const dir = mkdtempSync(join(tmpdir(), "sssf-delete-"));
+  tempDirs.push(dir);
+  const path = join(dir, "sssf.db");
+  const setup = new Database(path);
+  setup.exec(`
+    PRAGMA journal_mode=WAL;
+    CREATE TABLE sessions (adw_id TEXT PRIMARY KEY, archived INTEGER);
+    CREATE TABLE phases (id TEXT PRIMARY KEY, adw_id TEXT);
+    CREATE TABLE events (id TEXT PRIMARY KEY, adw_id TEXT);
+    CREATE TABLE envelopes (id TEXT PRIMARY KEY, adw_id TEXT);
+    CREATE TABLE gate_results (id TEXT PRIMARY KEY, adw_id TEXT);
+    CREATE TABLE processes (id TEXT PRIMARY KEY, adw_id TEXT);
+    CREATE TABLE agent_sessions (id TEXT PRIMARY KEY, adw_id TEXT);
+    CREATE TABLE subagents (id TEXT PRIMARY KEY, adw_id TEXT);
+    CREATE TABLE subagent_turns (id TEXT PRIMARY KEY, adw_id TEXT);
+    CREATE TABLE subagent_activities (id TEXT PRIMARY KEY, adw_id TEXT);
+  `);
+  const insertSessionRow = setup.query("INSERT INTO sessions VALUES (?, ?)");
+  const insertOwned = new Map(
+    DELETION_TABLES.slice(1).map((table) => [
+      table,
+      setup.query(`INSERT INTO ${table} VALUES (?, ?)`),
+    ]),
+  );
+  for (const [id, archived] of [["target", 1], ["target-extra", 1], ["active", 0]] as const) {
+    insertSessionRow.run(id, archived);
+    for (const [table, statement] of insertOwned) statement.run(`${table}-${id}`, id);
+    const nested = join(dir, "sessions", id, "agent", "nested");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, "record.txt"), id);
+  }
+  return { dir, path, setup };
+}
+
+function countOwned(setup: Database, table: string, adwId: string): number {
+  return setup
+    .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM ${table} WHERE adw_id = ?`)
+    .get(adwId)?.count ?? 0;
+}
+
 describe("session archive projection", () => {
   test("filters active and archived rows and supports restore", () => {
     const { path, setup } = fixture();
@@ -117,6 +171,84 @@ describe("session archive projection", () => {
     expect(db.session("legacy")?.archived).toBeNull();
     expect(() => db.setArchived("legacy", true)).toThrow("predates the archived column");
     db.close();
+  });
+});
+
+describe("archived session deletion", () => {
+  test("removes every current projection and only the exact raw tree", () => {
+    const { dir, path, setup } = deletionFixture();
+    const db = new SssfDb(path);
+
+    expect(db.deleteArchivedSession("target")).toBe("deleted");
+    for (const table of DELETION_TABLES) {
+      expect(countOwned(setup, table, "target")).toBe(0);
+      expect(countOwned(setup, table, "target-extra")).toBe(1);
+    }
+    expect(existsSync(join(dir, "sessions", "target"))).toBe(false);
+    expect(existsSync(join(dir, "sessions", "target-extra", "agent", "nested", "record.txt"))).toBe(true);
+    expect(existsSync(join(dir, "sessions", "active", "agent", "nested", "record.txt"))).toBe(true);
+
+    db.close();
+    setup.close();
+  });
+
+  test("refuses active, unknown, legacy, and unsafe ids without touching data", () => {
+    const current = deletionFixture();
+    const orphan = join(current.dir, "sessions", "unknown");
+    mkdirSync(orphan, { recursive: true });
+    writeFileSync(join(orphan, "keep.txt"), "keep");
+    const db = new SssfDb(current.path);
+
+    expect(db.deleteArchivedSession("active")).toBe("not_archived");
+    expect(db.deleteArchivedSession("unknown")).toBe("not_found");
+    expect(() => db.deleteArchivedSession("../active")).toThrow("invalid adw_id");
+    for (const table of DELETION_TABLES) expect(countOwned(current.setup, table, "active")).toBe(1);
+    expect(existsSync(join(current.dir, "sessions", "active", "agent", "nested", "record.txt"))).toBe(true);
+    expect(existsSync(join(orphan, "keep.txt"))).toBe(true);
+    db.close();
+    current.setup.close();
+
+    const legacy = fixture(false);
+    insertSession(legacy.setup, "legacy");
+    const legacyDir = join(dirname(legacy.path), "sessions", "legacy");
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, "keep.txt"), "keep");
+    legacy.setup.close();
+    const legacyDb = new SssfDb(legacy.path);
+    expect(legacyDb.deleteArchivedSession("legacy")).toBe("unsupported_archive_state");
+    expect(legacyDb.session("legacy")).not.toBeNull();
+    expect(existsSync(join(legacyDir, "keep.txt"))).toBe(true);
+    legacyDb.close();
+  });
+
+  test("allows an already-missing raw directory", () => {
+    const { dir, path, setup } = deletionFixture();
+    rmSync(join(dir, "sessions", "target"), { recursive: true });
+    const db = new SssfDb(path);
+    expect(db.deleteArchivedSession("target")).toBe("deleted");
+    for (const table of DELETION_TABLES) expect(countOwned(setup, table, "target")).toBe(0);
+    db.close();
+    setup.close();
+  });
+
+  test("rolls back rows and restores the raw tree when a later delete fails", () => {
+    const { dir, path, setup } = deletionFixture();
+    setup.exec(`
+      CREATE TRIGGER reject_phase_delete BEFORE DELETE ON phases
+      WHEN OLD.adw_id = 'target'
+      BEGIN SELECT RAISE(ABORT, 'forced deletion failure'); END;
+    `);
+    const db = new SssfDb(path);
+
+    expect(() => db.deleteArchivedSession("target")).toThrow("forced deletion failure");
+    for (const table of DELETION_TABLES) expect(countOwned(setup, table, "target")).toBe(1);
+    expect(existsSync(join(dir, "sessions", "target", "agent", "nested", "record.txt"))).toBe(true);
+    expect(
+      Array.from(new Bun.Glob(".sssf-delete-*").scanSync(join(dir, "sessions"))),
+    ).toEqual([]);
+
+    db.close();
+    setup.close();
   });
 });
 

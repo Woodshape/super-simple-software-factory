@@ -266,9 +266,9 @@ select * from events where adw_id = ? and rowid > ? order by rowid limit 500;
 
 That one cursor query is the entire transport. Live view and full history are the same query at different cadence, which is why there is no ingest endpoint, no WebSocket, no backfill, and no separate replay path. Every connection opens WAL, so reads never block the running writers.
 
-Files stay the raw record (`raw_output.jsonl`, `envelope.json`, `agent_map.json`). The db is the queryable mirror. Losing it loses nothing you cannot rebuild.
+Files stay the raw record (`raw_output.jsonl`, `envelope.json`, `agent_map.json`). The db is the queryable mirror. Losing it loses nothing you cannot rebuild. Confirmed permanent deletion is the deliberate exception: it removes both representations of the selected archived run.
 
-The skill ships a local read-only UI for this db at `.claude/skills/sssf/apps/visualizer/`: Vue and Vite served by Bun on loopback port 4600, with sessions and a trace waterfall whose unified agent hierarchy places live and historical nested Pi agents beneath their configured parent on the shared time axis. Configured and nested agents use the same detail interaction for identity, prompts/tasks, model/thinking, turns, results, and tools; configured-only session cards remain unchanged.
+The skill ships a local observability UI for this db at `.claude/skills/sssf/apps/visualizer/`: Vue and Vite served by Bun on loopback port 4600, with polled readonly observation plus human-triggered Archive/Restore and guarded permanent Delete controls. Its trace waterfall places live and historical nested Pi agents beneath their configured parent on the shared time axis. Configured and nested agents use the same detail interaction for identity, prompts/tasks, model/thinking, turns, results, and tools; configured-only session card telemetry remains unchanged.
 
 ```bash
 cd .claude/skills/sssf/apps/visualizer && bun install
@@ -289,7 +289,7 @@ super-simple-software-factory/          # the deployable factory, and nothing el
     ├── cookbooks/                      # 9 orchestrator playbooks, loaded lazily
     ├── references/                     # config / handoff / observability specs
     ├── scripts/                        # install.py, make_config.py, make_adw.py
-    ├── apps/visualizer/                # the read-only trace UI (Vue + Vite on Bun)
+    ├── apps/visualizer/                # local trace UI with archive / guarded delete controls
     └── templates/                      # EXACTLY what install.py stamps
         ├── sssf.config.yaml            # the starter roster
         ├── prompt_engineering/{agent}/ # system.md + user.md per agent

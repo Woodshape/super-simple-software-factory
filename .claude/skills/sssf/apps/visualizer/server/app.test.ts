@@ -9,7 +9,7 @@ import { SssfDb } from "./db.ts";
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
-function fixture(nested = true) {
+function fixture(nested = true, withArchived = true) {
   const dir = mkdtempSync(join(tmpdir(), "sssf-routes-"));
   dirs.push(dir);
   const path = join(dir, "sssf.db");
@@ -17,7 +17,7 @@ function fixture(nested = true) {
   setup.exec(`
     PRAGMA journal_mode=WAL;
     CREATE TABLE sessions (adw_id TEXT PRIMARY KEY, adw_name TEXT, request TEXT, status TEXT,
-      engineer TEXT, started_at TEXT, ended_at TEXT, total_tokens INTEGER, total_cost REAL, archived INTEGER);
+      engineer TEXT, started_at TEXT, ended_at TEXT, total_tokens INTEGER, total_cost REAL${withArchived ? ", archived INTEGER" : ""});
     CREATE TABLE phases (phase_id TEXT PRIMARY KEY, adw_id TEXT, seq INTEGER, name TEXT, kind TEXT,
       owner TEXT, description TEXT, status TEXT, attempt INTEGER, retries INTEGER, error TEXT,
       started_at TEXT, ended_at TEXT);
@@ -25,7 +25,9 @@ function fixture(nested = true) {
       type TEXT, name TEXT, payload_json TEXT, tokens INTEGER, started_at TEXT, ended_at TEXT);
     CREATE TABLE agent_sessions (adw_id TEXT, agent TEXT, coding_agent TEXT, model TEXT, session_id TEXT,
       color TEXT, context_tokens INTEGER, context_window INTEGER, created_at TEXT, last_used_at TEXT);
-    INSERT INTO sessions (adw_id,status,started_at,archived) VALUES ('run','running','2025-01-01',0),('other','success','2025-01-01',0);
+    INSERT INTO sessions (adw_id,status,started_at${withArchived ? ",archived" : ""}) VALUES
+      ('run','running','2025-01-01'${withArchived ? ",0" : ""}),
+      ('other','success','2025-01-01'${withArchived ? ",0" : ""});
     INSERT INTO phases (phase_id,adw_id,seq,name,kind,owner,description,status,attempt,retries,started_at)
       VALUES ('phase','run',1,'plan','agent','planner','plan it','running',1,0,'2025-01-01');
     INSERT INTO events (event_id,adw_id,phase_id,type,name,payload_json,started_at) VALUES
@@ -51,8 +53,10 @@ function fixture(nested = true) {
   `);
   const db = new SssfDb(path);
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, routes: createApiRoutes(db) });
-  const get = (route: string) => fetch(`http://127.0.0.1:${server.port}${route}`);
-  return { setup, db, server, get };
+  const request = (route: string, init?: RequestInit) =>
+    fetch(`http://127.0.0.1:${server.port}${route}`, init);
+  const get = (route: string) => request(route);
+  return { setup, db, server, get, request };
 }
 
 async function close(f: ReturnType<typeof fixture>) {
@@ -60,6 +64,43 @@ async function close(f: ReturnType<typeof fixture>) {
   f.db.close();
   f.setup.close();
 }
+
+describe("session deletion HTTP contract", () => {
+  test("preserves GET and maps active, success, repeated, and unsafe deletion", async () => {
+    const f = fixture();
+    try {
+      expect((await f.get("/api/sessions/run")).status).toBe(200);
+
+      const active = await f.request("/api/sessions/run", { method: "DELETE" });
+      expect(active.status).toBe(409);
+      expect(await active.json()).toMatchObject({ error: "archive this session before deleting it" });
+
+      const archive = await f.request("/api/sessions/run/archive", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ archived: true }),
+      });
+      expect(archive.status).toBe(200);
+
+      const deleted = await f.request("/api/sessions/run", { method: "DELETE" });
+      expect(deleted.status).toBe(200);
+      expect(await deleted.json()).toEqual({ adw_id: "run", deleted: true });
+      expect(f.setup.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM events WHERE adw_id='run'").get()?.count).toBe(0);
+      expect((await f.request("/api/sessions/run", { method: "DELETE" })).status).toBe(404);
+      expect((await f.request("/api/sessions/bad%20id", { method: "DELETE" })).status).toBe(400);
+    } finally { await close(f); }
+  });
+
+  test("returns a distinct conflict when archive state is unavailable", async () => {
+    const f = fixture(false, false);
+    try {
+      const response = await f.request("/api/sessions/run", { method: "DELETE" });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: expect.stringContaining("no archive state") });
+      expect(f.setup.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM sessions WHERE adw_id='run'").get()?.count).toBe(1);
+    } finally { await close(f); }
+  });
+});
 
 describe("unified agent HTTP contracts", () => {
   test("serves scoped roster/detail/cursor pages and live terminal updates", async () => {

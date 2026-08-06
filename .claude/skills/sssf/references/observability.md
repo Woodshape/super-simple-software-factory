@@ -4,7 +4,7 @@ The event schema, SQLite tables, and polling contract — the configured-agent p
 
 ## Two stores, one truth
 
-**Files are the raw record** (`raw_output.jsonl` streams, `envelope.json`, `agent_map.json`); **SQLite (`sssf.db`) is the queryable mirror** the UI reads. `tracer.py` writes both. Losing the db loses nothing that can't be rebuilt from files.
+**Files are the raw record** (`raw_output.jsonl` streams, `envelope.json`, `agent_map.json`); **SQLite (`sssf.db`) is the queryable mirror** the UI reads. `tracer.py` writes both. Losing the db loses nothing that can't be rebuilt from files. Permanent deletion is the intentional exception: it removes both representations for one archived run, so that run can no longer be rebuilt from its removed raw directory.
 
 Location comes from `observability.db` in `sssf.config.yaml`, default `adws/adw_data/sssf.db` — inside the **target** repo, gitignored.
 
@@ -192,7 +192,7 @@ PRAGMA synchronous=NORMAL;
 PRAGMA busy_timeout=5000;
 ```
 
-WAL allows readers during writes. Writers are the tracers of running ADW processes; concurrent writers are fine given one small transaction per event plus `busy_timeout`. The visualizer reads on a readonly connection with exactly one exception: archiving a session (`POST /api/sessions/:adw_id/archive`) opens a second connection to set `sessions.archived`. That flag is review triage — it says a human has looked at the run — so it is the reader's state living on the row, and no tracer ever writes or reads it.
+WAL allows readers during writes. Writers are the tracers of running ADW processes; concurrent writers are fine given one small transaction per event plus `busy_timeout`. Normal visualizer observation stays on a readonly connection. Two explicit human actions lazily open a separate writer: Archive/Restore (`POST /api/sessions/:adw_id/archive`) sets `sessions.archived`, and confirmed permanent Delete removes an archived run. Archive state is review triage — it says a human has looked at the run — and no tracer writes or reads it.
 
 ## Visualizer lifecycle and exposure
 
@@ -206,7 +206,9 @@ The stamped recipe passes the target repository's absolute db path to this lifec
 
 The sessions screen has one polling owner and a constant request count. It requests the active and archived collections with `GET /api/sessions?archived=0|1` at a modest cadence. Each response embeds phases, agents, and at most 120 compact card markers per session. Those markers contain identity, attribution, type/name, and time only: no payloads or token data. High-volume histories are deterministically sampled across the full run while retaining their first and newest eligible activity, and the response says when the marker count was truncated. Cards never fetch event histories themselves.
 
-Archive state is explicit review state. `POST /api/sessions/:adw_id/archive` with `{"archived":true}` moves a run out of Active; `false` restores it. Archived runs remain available through the normal detail endpoint and can be inspected before restoration. Databases predating the optional column still expose their rows as active.
+Archive state is explicit, reversible review state. `POST /api/sessions/:adw_id/archive` with `{"archived":true}` moves a run out of Active; `false` restores it. Archived runs remain available through the normal detail endpoint and can be inspected before restoration. Databases predating the optional column still expose their rows as active.
+
+Delete is separate and irreversible. `DELETE /api/sessions/:adw_id` succeeds only when the server re-reads `sessions.archived` as exactly `1` inside the deletion transaction; the UI tab is never authorization. Safe IDs return `200` after cleanup, unknown IDs return `404`, active or legacy-without-archive-state rows return `409`, and unsafe path segments return `400`. A successful transaction deletes exact-`adw_id` rows from the seven core projections (`sessions`, `phases`, `events`, `envelopes`, `gate_results`, `processes`, and `agent_sessions`) and, when present, the three nested-agent projections (`subagents`, `subagent_turns`, and `subagent_activities`). It stages and recursively removes `{dirname(sssf.db)}/sessions/{adw_id}`; an already-missing directory is harmless. Staging uses an exact same-parent path and is restored if SQL or commit fails, so traversal, prefix deletion, and partial pre-commit cleanup are refused.
 
 The selected-session trace is the lossless stream. It polls one bounded rowid-cursor page at a time:
 

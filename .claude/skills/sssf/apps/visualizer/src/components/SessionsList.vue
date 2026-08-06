@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import type { SessionSummary } from '../lib/types'
-import { archiveSession, fetchSessions } from '../lib/api'
+import { archiveSession, deleteSession, fetchSessions } from '../lib/api'
 import { ts } from '../lib/format'
 import SessionCard from './SessionCard.vue'
 
@@ -14,6 +14,8 @@ const apiError = ref<string | null>(null)
 const actionError = ref<string | null>(null)
 const loaded = ref(false)
 const nowMs = ref(Date.now())
+type PendingAction = 'archive' | 'restore' | 'delete'
+const pendingActions = ref<Record<string, PendingAction>>({})
 
 const POLL_MS = 2000
 let timer: ReturnType<typeof setInterval> | undefined
@@ -51,7 +53,15 @@ onMounted(() => {
 
 onUnmounted(() => clearInterval(timer))
 
+function setPending(adwId: string, action: PendingAction | null) {
+  const next = { ...pendingActions.value }
+  if (action) next[adwId] = action
+  else delete next[adwId]
+  pendingActions.value = next
+}
+
 async function changeArchived(adwId: string) {
+  if (pendingActions.value[adwId]) return
   const restoring = mode.value === 'archived'
   const activeBefore = activeSessions.value
   const archivedBefore = archivedSessions.value
@@ -60,6 +70,7 @@ async function changeArchived(adwId: string) {
   if (!session) return
 
   actionError.value = null
+  setPending(adwId, restoring ? 'restore' : 'archive')
   const moved = { ...session, archived: restoring ? 0 : 1 }
   if (restoring) {
     archivedSessions.value = archivedBefore.filter((item) => item.adw_id !== adwId)
@@ -77,6 +88,33 @@ async function changeArchived(adwId: string) {
     archivedSessions.value = archivedBefore
     actionError.value = `${restoring ? 'restore' : 'archive'} failed — ${err instanceof Error ? err.message : String(err)}`
     await tick()
+  } finally {
+    setPending(adwId, null)
+  }
+}
+
+async function removeArchived(adwId: string) {
+  if (pendingActions.value[adwId]) return
+  const session = archivedSessions.value.find((item) => item.adw_id === adwId)
+  if (!session) return
+
+  const name = session.adw_name ? `${session.adw_name} (${adwId})` : adwId
+  const confirmed = window.confirm(
+    `Permanently delete ${name}?\n\nThis cannot be undone. All trace/database records and session files for this run will be removed.`,
+  )
+  if (!confirmed) return
+
+  actionError.value = null
+  setPending(adwId, 'delete')
+  try {
+    await deleteSession(adwId)
+    archivedSessions.value = archivedSessions.value.filter((item) => item.adw_id !== adwId)
+    await tick()
+  } catch (err) {
+    actionError.value = `delete failed — ${err instanceof Error ? err.message : String(err)}`
+    await tick()
+  } finally {
+    setPending(adwId, null)
   }
 }
 
@@ -127,7 +165,9 @@ const ordered = computed(() =>
         :session="session"
         :now-ms="nowMs"
         :archived="mode === 'archived'"
+        :pending-action="pendingActions[session.adw_id]"
         @change-archived="changeArchived"
+        @delete-session="removeArchived"
       />
     </div>
     <div v-else-if="loaded" class="empty-state">

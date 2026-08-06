@@ -58,12 +58,31 @@ export function createApiRoutes(db: SssfDb) {
       }
       return json(db.sessions(limit, archived === "1"));
     }),
-    "/api/sessions/:adw_id": safely((req) => {
-      const id = param(req, "adw_id");
-      if (!safe(id)) return json({ error: "invalid adw_id" } satisfies ApiError, 400);
-      const detail = db.sessionDetail(id);
-      return detail ? json(detail) : notFound(`no session ${id}`);
-    }),
+    "/api/sessions/:adw_id": {
+      GET: safely((req) => {
+        const id = param(req, "adw_id");
+        if (!safe(id)) return json({ error: "invalid adw_id" } satisfies ApiError, 400);
+        const detail = db.sessionDetail(id);
+        return detail ? json(detail) : notFound(`no session ${id}`);
+      }),
+      DELETE: safely((req) => {
+        const id = param(req, "adw_id");
+        if (!safe(id)) return json({ error: "invalid adw_id" } satisfies ApiError, 400);
+        const result = db.deleteArchivedSession(id);
+        if (result === "deleted") return json({ adw_id: id, deleted: true });
+        if (result === "not_found") return notFound(`no session ${id}`);
+        if (result === "unsupported_archive_state") {
+          return json(
+            { error: "cannot prove this session is archived because this database has no archive state" } satisfies ApiError,
+            409,
+          );
+        }
+        return json(
+          { error: "archive this session before deleting it" } satisfies ApiError,
+          409,
+        );
+      }),
+    },
     "/api/sessions/:adw_id/archive": {
       POST: safely(async (req) => {
         const id = param(req, "adw_id");

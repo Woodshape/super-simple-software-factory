@@ -6,6 +6,7 @@ export type {
   CardTimelineMarker,
   SessionUsage,
   SessionDetail,
+  DeleteSessionResponse,
   Phase,
   Event as EventRow,
   EventsPage,

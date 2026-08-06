@@ -6,6 +6,7 @@ import type {
   HealthResponse,
   PromptsResponse,
   SessionDetail,
+  DeleteSessionResponse,
   SessionSummary,
   AgentActivitiesPage,
   AgentDetail,
@@ -59,6 +60,23 @@ export async function fetchEvents(adwId: string, after: number, limit = 500): Pr
     return { events: page, cursor, has_more: page.length === limit }
   }
   return { events: page.events ?? [], cursor: page.cursor ?? after, has_more: page.has_more ?? false }
+}
+
+/** Permanently delete an archived run and its raw session files. */
+export async function deleteSession(adwId: string): Promise<DeleteSessionResponse> {
+  const url = `/api/sessions/${encodeURIComponent(adwId)}`
+  const res = await fetch(url, { method: 'DELETE' })
+  if (!res.ok) {
+    let message = `DELETE ${url} → ${res.status}`
+    try {
+      const payload = (await res.json()) as { error?: unknown }
+      if (typeof payload.error === 'string') message = payload.error
+    } catch {
+      // Preserve the status fallback when the server did not return JSON.
+    }
+    throw new Error(message)
+  }
+  return (await res.json()) as DeleteSessionResponse
 }
 
 /** Archive a run out of the review list (or restore it with archived=false). */

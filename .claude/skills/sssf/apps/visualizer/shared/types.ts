@@ -1,7 +1,9 @@
 /**
- * Types shared by the read-only server and the Vue client.
+ * Types shared by the observation server and the Vue client.
  *
- * Storage-row interfaces mirror sssf.db (see references/observability.md), while
+ * Normal observation is readonly; archive/restore and guarded permanent deletion
+ * are explicit human-triggered mutations. Storage-row interfaces mirror sssf.db
+ * (see references/observability.md), while
  * the trace agent contracts are read projections that unify configured phases
  * and nested conversations without changing their separate persistence tables.
  */
@@ -244,6 +246,12 @@ export interface ToolCallPayload {
 
 /** GET /api/sessions */
 export type SessionsResponse = SessionSummary[];
+
+/** DELETE /api/sessions/:adw_id */
+export interface DeleteSessionResponse {
+  adw_id: string;
+  deleted: true;
+}
 
 /** GET /api/sessions/:adw_id */
 /**
