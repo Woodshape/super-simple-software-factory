@@ -35,12 +35,13 @@ function queryInt(req: Request, key: string, fallback: number): number | null {
   const raw = new URL(req.url).searchParams.get(key);
   if (raw === null || raw.trim() === "") return fallback;
   if (!/^\d+$/.test(raw)) return null;
-  return Number.parseInt(raw, 10);
+  const value = Number.parseInt(raw, 10);
+  return Number.isSafeInteger(value) ? value : null;
 }
-function validIds(req: Request): { adwId: string; childId: string } | null {
+function validAgentIds(req: Request): { adwId: string; agentId: string } | null {
   const adwId = param(req, "adw_id");
-  const childId = param(req, "subagent_id");
-  return safe(adwId) && safe(childId) ? { adwId, childId } : null;
+  const agentId = param(req, "agent_id");
+  return safe(adwId) && safe(agentId) ? { adwId, agentId } : null;
 }
 
 /** API-only route factory: importing it never binds a port. */
@@ -83,25 +84,21 @@ export function createApiRoutes(db: SssfDb) {
     }),
     "/api/sessions/:adw_id/envelopes": safely((req) => json(db.envelopes(param(req, "adw_id")))),
     "/api/sessions/:adw_id/gates": safely((req) => json(db.gates(param(req, "adw_id")))),
-    "/api/sessions/:adw_id/subagents": safely((req) => {
-      const adwId = param(req, "adw_id");
-      if (!safe(adwId)) return json({ error: "invalid adw_id" } satisfies ApiError, 400);
-      if (!db.session(adwId)) return notFound(`no session ${adwId}`);
-      return json(db.subagents(adwId));
+    "/api/sessions/:adw_id/agents/:agent_id": safely((req) => {
+      const ids = validAgentIds(req);
+      if (!ids) return json({ error: "invalid adw_id or agent_id" } satisfies ApiError, 400);
+      const agent = db.agent(ids.adwId, ids.agentId);
+      return agent ? json(agent) : notFound(`no agent ${ids.agentId} in session ${ids.adwId}`);
     }),
-    "/api/sessions/:adw_id/subagents/:subagent_id": safely((req) => {
-      const ids = validIds(req);
-      if (!ids) return json({ error: "invalid adw_id or subagent_id" } satisfies ApiError, 400);
-      const child = db.subagent(ids.adwId, ids.childId);
-      return child ? json(child) : notFound(`no subagent ${ids.childId} in session ${ids.adwId}`);
-    }),
-    "/api/sessions/:adw_id/subagents/:subagent_id/activity": safely((req) => {
-      const ids = validIds(req);
+    "/api/sessions/:adw_id/agents/:agent_id/activity": safely((req) => {
+      const ids = validAgentIds(req);
       const after = queryInt(req, "after", 0);
       const limit = queryInt(req, "limit", 500);
-      if (!ids || after === null || limit === null) return json({ error: "invalid path or cursor query" } satisfies ApiError, 400);
-      const page = db.subagentActivities(ids.adwId, ids.childId, after, limit);
-      return page ? json(page) : notFound(`no subagent ${ids.childId} in session ${ids.adwId}`);
+      if (!ids || after === null || limit === null || limit < 1 || limit > 1000) {
+        return json({ error: "invalid path or cursor query" } satisfies ApiError, 400);
+      }
+      const page = db.agentActivities(ids.adwId, ids.agentId, after, limit);
+      return page ? json(page) : notFound(`no agent ${ids.agentId} in session ${ids.adwId}`);
     }),
     "/api/sessions/:adw_id/agents/:agent/prompts": safely(async (req) => {
       const adwId = param(req, "adw_id");

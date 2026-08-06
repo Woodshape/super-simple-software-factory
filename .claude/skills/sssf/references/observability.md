@@ -171,13 +171,12 @@ Nested children are intentionally not configured agents or phases. Three additiv
 
 With harness trace context, files live at `sessions/{adw_id}/{parent_agent}/subagents/{subagent_id}/`: `session.jsonl`, `turn-N/raw_output.jsonl`, and `turn-N/result.txt`. The shared `telemetry.jsonl` is tailed while the configured parent runs; only Python's tracer writes SQLite. Nested PIDs use `processes.kind = 'subagent'`. Session finalization changes any leftover live child/turn to `interrupted` and closes its process row. Without trace context the extension remains standalone and keeps its normal `~/.pi` session location without emitting SSSF telemetry.
 
-The local read API exposes:
+The visualizer projects configured phase agents and nested conversations as one hierarchy. `SessionDetail.agents` contains configured nodes followed by children linked through `parent_agent_id`; session-list cards deliberately keep their configured-only `AgentSession` projection. The local read API exposes both sources through one vocabulary:
 
-- `GET /api/sessions/:adw_id/subagents` — bounded summaries, no full results/tool payloads;
-- `GET /api/sessions/:adw_id/subagents/:subagent_id` — all ordered turns and full results;
-- `GET /api/sessions/:adw_id/subagents/:subagent_id/activity?after=<id>&limit=<n>` — cursor-paged tools.
+- `GET /api/sessions/:adw_id/agents/:agent_id` — configured identity or all ordered nested turns and results;
+- `GET /api/sessions/:adw_id/agents/:agent_id/activity?after=<id>&limit=<n>` — cursor-paged normalized tools.
 
-Lookups are ADW-scoped. Databases predating these optional tables return an empty roster. Existing `EventType`, `SessionDetail.agents`, phase lanes, and configured-agent cards retain their prior meaning. The API and UI remain loopback-only; this adds no remote transport, authentication, or CORS policy.
+Lookups are ADW-scoped. Databases predating the optional nested storage tables still return configured trace agents. The trace renders children beneath their spawning configured phase on the shared time axis and opens the same agent-detail interaction for either source. The API and UI remain loopback-only; this adds no remote transport, authentication, or CORS policy.
 
 **Derived, never stored:** phase durations (`ended_at − started_at`), session phase-progress (query `phases` by `adw_id`), lane layout (`kind` + `owner`).
 

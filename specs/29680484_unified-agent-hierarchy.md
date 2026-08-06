@@ -1,5 +1,5 @@
 ---
-status: planned
+status: complete
 ---
 
 # Plan: unify configured and nested agents in the visualizer

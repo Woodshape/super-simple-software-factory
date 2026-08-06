@@ -26,6 +26,12 @@ function fixture(nested = true) {
     CREATE TABLE agent_sessions (adw_id TEXT, agent TEXT, coding_agent TEXT, model TEXT, session_id TEXT,
       color TEXT, context_tokens INTEGER, context_window INTEGER, created_at TEXT, last_used_at TEXT);
     INSERT INTO sessions (adw_id,status,started_at,archived) VALUES ('run','running','2025-01-01',0),('other','success','2025-01-01',0);
+    INSERT INTO phases (phase_id,adw_id,seq,name,kind,owner,description,status,attempt,retries,started_at)
+      VALUES ('phase','run',1,'plan','agent','planner','plan it','running',1,0,'2025-01-01');
+    INSERT INTO events (event_id,adw_id,phase_id,type,name,payload_json,started_at) VALUES
+      ('configured-start','run','phase','agent_start','planner','{"model":"model","thinking":"high"}','2025-01-01'),
+      ('configured-tool-1','run','phase','tool_call','read','{"tool":"read","ok":true}','2025-01-01'),
+      ('configured-tool-2','run','phase','tool_call','bash','{"tool":"bash","ok":false}','2025-01-01');
   `);
   if (nested) setup.exec(`
     CREATE TABLE subagents (subagent_id TEXT PRIMARY KEY, adw_id TEXT, phase_id TEXT, parent_agent TEXT,
@@ -55,26 +61,38 @@ async function close(f: ReturnType<typeof fixture>) {
   f.setup.close();
 }
 
-describe("nested subagent HTTP contracts", () => {
+describe("unified agent HTTP contracts", () => {
   test("serves scoped roster/detail/cursor pages and live terminal updates", async () => {
     const f = fixture();
     try {
-      const roster = await f.get("/api/sessions/run/subagents");
+      const roster = await f.get("/api/sessions/run");
       expect(roster.status).toBe(200);
-      expect((await roster.json()) as unknown[]).toHaveLength(1);
-      const detail = await f.get("/api/sessions/run/subagents/child");
+      expect((await roster.json()) as { agents: unknown[] }).toMatchObject({ agents: [
+        { agent_id: "phase", source: "configured" },
+        { agent_id: "child", source: "nested", parent_agent_id: "phase" },
+      ] });
+      const configured = await f.get("/api/sessions/run/agents/phase");
+      expect(configured.status).toBe(200);
+      expect(await configured.json()).toMatchObject({ source: "configured", phase_id: "phase", turns: [] });
+      const configuredPage = await f.get("/api/sessions/run/agents/phase/activity?after=0&limit=1");
+      const configuredFirst = await configuredPage.json() as { cursor: number; has_more: boolean; activities: unknown[] };
+      expect(configuredFirst).toMatchObject({ has_more: true, activities: [{ agent_id: "phase", tool: "read", ok: 1 }] });
+      const configuredSecond = await f.get(`/api/sessions/run/agents/phase/activity?after=${configuredFirst.cursor}&limit=1`);
+      expect(await configuredSecond.json()).toMatchObject({ activities: [{ tool: "bash", ok: 0 }] });
+
+      const detail = await f.get("/api/sessions/run/agents/child");
       expect(detail.status).toBe(200);
       expect(await detail.json()).toMatchObject({ subagent_id: "child", turns: [{ status: "running" }] });
-      const first = await f.get("/api/sessions/run/subagents/child/activity?after=0&limit=1");
+      const first = await f.get("/api/sessions/run/agents/child/activity?after=0&limit=1");
       const firstPage = await first.json() as { cursor: number; has_more: boolean; activities: unknown[] };
       expect(firstPage).toMatchObject({ has_more: true });
       expect(firstPage.activities).toHaveLength(1);
-      const second = await f.get(`/api/sessions/run/subagents/child/activity?after=${firstPage.cursor}&limit=1`);
+      const second = await f.get(`/api/sessions/run/agents/child/activity?after=${firstPage.cursor}&limit=1`);
       expect((await second.json()) as { activities: unknown[] }).toMatchObject({ activities: [{ tool: "bash" }] });
 
       f.setup.query("UPDATE subagents SET status='success', ended_at='2025-01-02' WHERE subagent_id='child'").run();
       f.setup.query("UPDATE subagent_turns SET status='success', result='full result' WHERE turn_id='child:1'").run();
-      const terminal = await f.get("/api/sessions/run/subagents/child");
+      const terminal = await f.get("/api/sessions/run/agents/child");
       expect(await terminal.json()).toMatchObject({ status: "success", turns: [{ result: "full result" }] });
     } finally { await close(f); }
   });
@@ -82,19 +100,22 @@ describe("nested subagent HTTP contracts", () => {
   test("validates paths and cursors and rejects ADW mismatches", async () => {
     const f = fixture();
     try {
-      expect((await f.get("/api/sessions/run/subagents/bad%20id")).status).toBe(400);
-      expect((await f.get("/api/sessions/run/subagents/child/activity?after=nope")).status).toBe(400);
-      expect((await f.get("/api/sessions/other/subagents/child")).status).toBe(404);
-      expect((await f.get("/api/sessions/missing/subagents")).status).toBe(404);
+      expect((await f.get("/api/sessions/run/agents/bad%20id")).status).toBe(400);
+      expect((await f.get("/api/sessions/run/agents/child/activity?after=nope")).status).toBe(400);
+      expect((await f.get("/api/sessions/run/agents/child/activity?after=-1")).status).toBe(400);
+      expect((await f.get("/api/sessions/run/agents/child/activity?limit=1001")).status).toBe(400);
+      expect((await f.get("/api/sessions/run/agents/child/activity?after=999999999999999999999")).status).toBe(400);
+      expect((await f.get("/api/sessions/other/agents/child")).status).toBe(404);
+      expect((await f.get("/api/sessions/missing")).status).toBe(404);
     } finally { await close(f); }
   });
 
-  test("returns an empty roster for a legacy database", async () => {
+  test("keeps configured agents in a legacy database", async () => {
     const f = fixture(false);
     try {
-      const response = await f.get("/api/sessions/run/subagents");
+      const response = await f.get("/api/sessions/run");
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual([]);
+      expect((await response.json()) as { agents: unknown[] }).toMatchObject({ agents: [{ agent_id: "phase", source: "configured" }] });
     } finally { await close(f); }
   });
 });

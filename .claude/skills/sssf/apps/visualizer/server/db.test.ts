@@ -206,26 +206,122 @@ describe("nested subagent projection", () => {
     setup.close();
 
     const db = new SssfDb(path);
-    expect(db.subagents("nested")).toHaveLength(1);
-    expect(db.subagents("nested")[0]).toMatchObject({ model: "m2", turn_count: 2, tool_count: 3 });
-    expect(db.subagent("nested", "child")?.turns.map((turn) => turn.result)).toEqual([
+    expect(db.traceAgents("nested").filter((row) => row.source === "nested")).toHaveLength(1);
+    expect(db.traceAgents("nested").find((row) => row.source === "nested")).toMatchObject({ model: "m2", turn_count: 2, tool_count: 3 });
+    expect(db.agent("nested", "child")?.turns.map((turn) => turn.result)).toEqual([
       "first result", "second result",
     ]);
-    expect(db.subagent("other", "child")).toBeNull();
-    const first = db.subagentActivities("nested", "child", 0, 2)!;
-    const second = db.subagentActivities("nested", "child", first.cursor, 2)!;
+    expect(db.agent("other", "child")).toBeNull();
+    const first = db.agentActivities("nested", "child", 0, 2)!;
+    const second = db.agentActivities("nested", "child", first.cursor, 2)!;
     expect([...first.activities, ...second.activities].map((row) => row.tool)).toEqual(["read", "bash", "grep"]);
     expect(db.agentSessions("nested")).toEqual([]);
     db.close();
   });
 
-  test("returns an empty roster for legacy databases", () => {
+  test("projects the da18dd31 acceptance hierarchy and both generic activity sources", () => {
     const { path, setup } = fixture();
-    insertSession(setup, "legacy", 0);
+    insertSession(setup, "da18dd31", 0);
+    insertSession(setup, "other", 0);
+    insertPhase(setup, "da18dd31_02_scout", "da18dd31", "scout");
+    setup.exec(`
+      CREATE TABLE subagents (
+        subagent_id TEXT PRIMARY KEY, adw_id TEXT, phase_id TEXT, parent_agent TEXT,
+        display_id INTEGER, parent_tool_call_id TEXT, parent_event_id TEXT, task TEXT,
+        session_path TEXT, status TEXT, created_at TEXT, started_at TEXT, ended_at TEXT,
+        duration_ms INTEGER, removed_at TEXT
+      );
+      CREATE TABLE subagent_turns (
+        turn_id TEXT PRIMARY KEY, subagent_id TEXT, adw_id TEXT, phase_id TEXT, turn INTEGER,
+        parent_tool_call_id TEXT, parent_event_id TEXT, prompt TEXT, model TEXT, thinking TEXT,
+        pid INTEGER, status TEXT, started_at TEXT, ended_at TEXT, duration_ms INTEGER,
+        result TEXT, error TEXT, tool_count INTEGER, raw_output_path TEXT, session_path TEXT
+      );
+      CREATE TABLE subagent_activities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, telemetry_id TEXT, activity_id TEXT,
+        subagent_id TEXT, adw_id TEXT, turn INTEGER, tool_call_id TEXT, tool TEXT,
+        args_json TEXT, result_snippet TEXT, ok INTEGER, started_at TEXT, ended_at TEXT,
+        duration_ms INTEGER
+      );
+      INSERT INTO agent_sessions VALUES
+        ('da18dd31','scout','pi','openai-codex/gpt-5.6-luna','configured-session','#a78bfa',1200,10000,'2025-01-01T00:00:00Z','2025-01-01T00:00:10Z');
+      INSERT INTO events (event_id,adw_id,phase_id,type,name,payload_json,started_at,ended_at) VALUES
+        ('scout-start','da18dd31','da18dd31_02_scout','agent_start','scout','{"model":"openai-codex/gpt-5.6-luna","thinking":"low"}','2025-01-01T00:00:00Z',NULL),
+        ('scout-tool','da18dd31','da18dd31_02_scout','tool_call','read','{"tool":"read","args":{"path":"README.md"},"ok":true,"result_snippet":"ok","duration_ms":5}','2025-01-01T00:00:01Z','2025-01-01T00:00:01.005Z');
+      INSERT INTO subagents VALUES
+        ('sub_msh502p4_1_af8882dc','da18dd31','da18dd31_02_scout','scout',1,'call-1','event-1','first task','/tmp/first.jsonl','success','2025-01-01T00:00:02Z','2025-01-01T00:00:03Z','2025-01-01T00:00:06Z',3000,NULL),
+        ('sub_msh502pb_2_bb3b893e','da18dd31','da18dd31_02_scout','scout',2,'call-2','event-2','second task','/tmp/second.jsonl','success','2025-01-01T00:00:04Z','2025-01-01T00:00:05Z','2025-01-01T00:00:09Z',4000,NULL);
+      INSERT INTO subagent_turns VALUES
+        ('first:1','sub_msh502p4_1_af8882dc','da18dd31','da18dd31_02_scout',1,'call-1','event-1','first prompt','openai-codex/gpt-5.6-luna','low',1,'success','2025-01-01T00:00:03Z','2025-01-01T00:00:04Z',1000,'first result',NULL,4,NULL,'/tmp/first.jsonl'),
+        ('first:2','sub_msh502p4_1_af8882dc','da18dd31','da18dd31_02_scout',2,NULL,NULL,'continue','openai-codex/gpt-5.6-luna','low',2,'success','2025-01-01T00:00:05Z','2025-01-01T00:00:06Z',1000,'continued result',NULL,5,NULL,'/tmp/first.jsonl'),
+        ('second:1','sub_msh502pb_2_bb3b893e','da18dd31','da18dd31_02_scout',1,'call-2','event-2','second prompt','openai-codex/gpt-5.6-luna','low',3,'success','2025-01-01T00:00:05Z','2025-01-01T00:00:09Z',4000,'second result',NULL,6,NULL,'/tmp/second.jsonl');
+    `);
+    const insertActivity = setup.query(`INSERT INTO subagent_activities
+      (telemetry_id,activity_id,subagent_id,adw_id,turn,tool_call_id,tool,args_json,result_snippet,ok,started_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+    for (const [childId, count] of [["sub_msh502p4_1_af8882dc", 9], ["sub_msh502pb_2_bb3b893e", 6]] as const) {
+      for (let index = 1; index <= count; index += 1) {
+        insertActivity.run(`${childId}:${index}`, `${childId}:${index}`, childId, "da18dd31", 1,
+          `call-${index}`, "read", "{}", "ok", 1, `2025-01-01T00:00:0${Math.min(index, 9)}Z`);
+      }
+    }
+    setup.close();
+
+    const db = new SssfDb(path);
+    const roster = db.traceAgents("da18dd31");
+    expect(roster.map((row) => row.agent_id)).toEqual([
+      "da18dd31_02_scout", "sub_msh502p4_1_af8882dc", "sub_msh502pb_2_bb3b893e",
+    ]);
+    expect(roster[0]).toMatchObject({ source: "configured", model: "openai-codex/gpt-5.6-luna", thinking: "low" });
+    expect(roster[1]).toMatchObject({ source: "nested", parent_agent_id: "da18dd31_02_scout", tool_count: 9, started_at: "2025-01-01T00:00:03Z" });
+    expect(roster[2]).toMatchObject({ source: "nested", parent_agent_id: "da18dd31_02_scout", tool_count: 6, started_at: "2025-01-01T00:00:05Z" });
+    expect(db.sessions().find((row) => row.adw_id === "da18dd31")?.agents.map((row) => row.agent)).toEqual(["scout"]);
+    expect(db.agent("da18dd31", "da18dd31_02_scout")).toMatchObject({ source: "configured", phase_id: "da18dd31_02_scout", turns: [] });
+    expect(db.agentActivities("da18dd31", "da18dd31_02_scout", 0, 10)?.activities[0]).toMatchObject({ tool: "read", ok: 1, args_json: '{"path":"README.md"}' });
+    expect(db.agentActivities("da18dd31", "sub_msh502p4_1_af8882dc", 0, 20)?.activities).toHaveLength(9);
+    expect(db.agentActivities("da18dd31", "sub_msh502pb_2_bb3b893e", 0, 20)?.activities).toHaveLength(6);
+    expect(db.agent("da18dd31", "sub_msh502p4_1_af8882dc")?.turns.map((turn) => turn.result)).toEqual(["first result", "continued result"]);
+    expect(db.agent("other", "sub_msh502p4_1_af8882dc")).toBeNull();
+    db.close();
+  });
+
+  test("keeps stale continuation endings live and preserves terminal child states", () => {
+    const { path, setup } = fixture();
+    insertSession(setup, "live", 0);
+    insertPhase(setup, "live_scout", "live", "scout");
+    setup.exec(`
+      CREATE TABLE subagents (subagent_id TEXT PRIMARY KEY,adw_id TEXT,phase_id TEXT,parent_agent TEXT,display_id INTEGER,parent_tool_call_id TEXT,parent_event_id TEXT,task TEXT,session_path TEXT,status TEXT,created_at TEXT,started_at TEXT,ended_at TEXT,duration_ms INTEGER,removed_at TEXT);
+      CREATE TABLE subagent_turns (turn_id TEXT PRIMARY KEY,subagent_id TEXT,adw_id TEXT,phase_id TEXT,turn INTEGER,parent_tool_call_id TEXT,parent_event_id TEXT,prompt TEXT,model TEXT,thinking TEXT,pid INTEGER,status TEXT,started_at TEXT,ended_at TEXT,duration_ms INTEGER,result TEXT,error TEXT,tool_count INTEGER,raw_output_path TEXT,session_path TEXT);
+      INSERT INTO subagents VALUES
+        ('continuing','live','live_scout','scout',1,NULL,NULL,'continue',NULL,'running','2025-01-01','2025-01-01','2025-01-02',1000,NULL),
+        ('cancelled','live','live_scout','scout',2,NULL,NULL,'cancelled',NULL,'cancelled','2025-01-01','2025-01-01','2025-01-02',1000,NULL),
+        ('interrupted','live','live_scout','scout',3,NULL,NULL,'interrupted',NULL,'interrupted','2025-01-01','2025-01-01','2025-01-02',1000,NULL);
+      INSERT INTO subagent_turns VALUES
+        ('continuing:1','continuing','live','live_scout',1,NULL,NULL,'first',NULL,NULL,1,'success','2025-01-01','2025-01-02',1000,'prior result',NULL,0,NULL,NULL),
+        ('continuing:2','continuing','live','live_scout',2,NULL,NULL,'again',NULL,NULL,2,'running','2025-01-03',NULL,NULL,NULL,NULL,0,NULL,NULL),
+        ('cancelled:1','cancelled','live','live_scout',1,NULL,NULL,'x',NULL,NULL,3,'cancelled','2025-01-01','2025-01-02',1000,NULL,'cancelled',0,NULL,NULL),
+        ('interrupted:1','interrupted','live','live_scout',1,NULL,NULL,'x',NULL,NULL,4,'interrupted','2025-01-01','2025-01-02',1000,NULL,'interrupted',0,NULL,NULL);
+    `);
     setup.close();
     const db = new SssfDb(path);
-    expect(db.subagents("legacy")).toEqual([]);
-    expect(db.subagent("legacy", "missing")).toBeNull();
+    const continuing = db.traceAgents("live").find((row) => row.agent_id === "continuing");
+    expect(continuing).toMatchObject({ status: "running", ended_at: null, duration_ms: null, turn_count: 2 });
+    expect(db.agent("live", "continuing")?.turns).toMatchObject([
+      { status: "success", ended_at: "2025-01-02", result: "prior result" },
+      { status: "running", ended_at: null },
+    ]);
+    expect(db.traceAgents("live").filter((row) => row.source === "nested").map((row) => row.status)).toEqual(["running", "cancelled", "interrupted"]);
+    db.close();
+  });
+
+  test("returns configured agents for legacy databases without nested tables", () => {
+    const { path, setup } = fixture();
+    insertSession(setup, "legacy", 0);
+    insertPhase(setup, "legacy_scout", "legacy", "scout");
+    setup.close();
+    const db = new SssfDb(path);
+    expect(db.traceAgents("legacy")).toMatchObject([{ agent_id: "legacy_scout", source: "configured" }]);
+    expect(db.agent("legacy", "missing")).toBeNull();
     db.close();
   });
 });

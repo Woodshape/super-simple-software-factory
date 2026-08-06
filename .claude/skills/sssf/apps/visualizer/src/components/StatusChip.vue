@@ -6,6 +6,10 @@ defineProps<{ status: string }>()
 const ICONS: Record<string, unknown> = {
   success: Check,
   fail: X,
+  error: X,
+  cancelled: X,
+  killed: X,
+  interrupted: X,
   running: LoaderCircle,
   queued: Circle,
 }
@@ -42,7 +46,11 @@ const ICONS: Record<string, unknown> = {
   box-shadow: 0 0 12px rgba(74, 222, 128, 0.12);
 }
 
-.chip.fail {
+.chip.fail,
+.chip.error,
+.chip.cancelled,
+.chip.killed,
+.chip.interrupted {
   color: var(--red);
   border-color: rgba(255, 111, 103, 0.45);
   background: rgba(255, 111, 103, 0.09);

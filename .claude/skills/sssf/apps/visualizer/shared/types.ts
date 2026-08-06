@@ -1,9 +1,9 @@
 /**
  * Types shared by the read-only server and the Vue client.
  *
- * Every interface mirrors a table in sssf.db one-for-one (see
- * references/observability.md). Nothing here is derived state: phase durations,
- * session progress and lane layout are computed in the UI, never stored.
+ * Storage-row interfaces mirror sssf.db (see references/observability.md), while
+ * the trace agent contracts are read projections that unify configured phases
+ * and nested conversations without changing their separate persistence tables.
  */
 
 /** sessions.status — a run is running until it earns success. */
@@ -265,13 +265,8 @@ export interface SessionDetail {
   usage: SessionUsage;
   /** Ordered by seq. */
   phases: Phase[];
-  /**
-   * One entry per agent that has run OR is running under this adw_id — lane
-   * labels come from here. Finished agents come from the agent_sessions table;
-   * an agent still in flight has no row there yet, so its entry is built from
-   * its agent_start event (coding_agent is null until it finishes).
-   */
-  agents: AgentSession[];
+  /** Unified trace roster. Configured phase nodes are followed by their nested children. */
+  agents: TraceAgent[];
 }
 
 /**
@@ -318,41 +313,58 @@ export interface HealthResponse {
   sessions: number;
 }
 
-// ── nested Pi subagents (deliberately separate from configured agents) ──────
+// ── unified trace agents ────────────────────────────────────────────────────
 
-export type SubagentStatus =
-  | "running"
-  | "success"
-  | "error"
-  | "cancelled"
-  | "killed"
-  | "interrupted";
+export type AgentStatus = PhaseStatus | "error" | "cancelled" | "killed" | "interrupted";
 
-export interface SubagentSummary {
-  subagent_id: string;
+interface TraceAgentBase {
+  /** Opaque within a session: phase_id for configured nodes, stable subagent_id for nested nodes. */
+  agent_id: string;
+  source: "configured" | "nested";
   adw_id: string;
   phase_id: string | null;
-  parent_agent: string | null;
-  display_id: number | null;
-  parent_tool_call_id: string | null;
-  parent_event_id: string | null;
+  /** The spawning configured phase's agent_id; null only for configured nodes or unresolved legacy data. */
+  parent_agent_id: string | null;
+  name: string;
   task: string | null;
-  model: string | null;
-  thinking: string | null;
-  session_path: string | null;
-  status: SubagentStatus | null;
+  status: AgentStatus | null;
   created_at: string | null;
   started_at: string | null;
   ended_at: string | null;
   duration_ms: number | null;
-  removed_at: string | null;
+  model: string | null;
+  thinking: string | null;
   turn_count: number;
   tool_count: number;
 }
 
-export interface SubagentTurn {
-  turn_id: string;
+export interface ConfiguredAgent extends TraceAgentBase, AgentSession {
+  source: "configured";
+  phase_id: string;
+  parent_agent_id: null;
+  phase_name: string | null;
+  phase_seq: number | null;
+  phase_status: PhaseStatus | null;
+  phase_attempt: number | null;
+  phase_retries: number | null;
+}
+
+export interface NestedAgent extends TraceAgentBase {
+  source: "nested";
   subagent_id: string;
+  display_id: number | null;
+  parent_agent: string | null;
+  parent_tool_call_id: string | null;
+  parent_event_id: string | null;
+  session_path: string | null;
+  removed_at: string | null;
+}
+
+export type TraceAgent = ConfiguredAgent | NestedAgent;
+
+export interface AgentTurn {
+  turn_id: string;
+  agent_id: string;
   turn: number;
   parent_tool_call_id: string | null;
   parent_event_id: string | null;
@@ -360,7 +372,7 @@ export interface SubagentTurn {
   model: string | null;
   thinking: string | null;
   pid: number | null;
-  status: SubagentStatus | null;
+  status: AgentStatus | null;
   started_at: string | null;
   ended_at: string | null;
   duration_ms: number | null;
@@ -371,15 +383,15 @@ export interface SubagentTurn {
   session_path: string | null;
 }
 
-export interface SubagentDetail extends SubagentSummary {
-  turns: SubagentTurn[];
-}
+export type AgentDetail =
+  | (ConfiguredAgent & { turns: AgentTurn[] })
+  | (NestedAgent & { turns: AgentTurn[] });
 
-export interface SubagentActivity {
+export interface AgentActivity {
   cursor: number;
   telemetry_id: string;
   activity_id: string | null;
-  subagent_id: string;
+  agent_id: string;
   turn: number | null;
   tool_call_id: string | null;
   tool: string | null;
@@ -391,13 +403,11 @@ export interface SubagentActivity {
   duration_ms: number | null;
 }
 
-export interface SubagentActivitiesPage {
-  activities: SubagentActivity[];
+export interface AgentActivitiesPage {
+  activities: AgentActivity[];
   cursor: number;
   has_more: boolean;
 }
-
-export type SubagentsResponse = SubagentSummary[];
 
 export interface ApiError {
   error: string;

@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watchEffect } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
 import type {
-  AgentSession,
+  AgentActivity,
+  AgentDetail,
+  ConfiguredAgent,
   AgentStartPayload,
   Envelope,
   EventRow,
@@ -10,9 +12,8 @@ import type {
   PhaseKind,
   Session,
   SessionUsage,
-  SubagentActivity,
-  SubagentDetail,
-  SubagentSummary,
+  NestedAgent,
+  TraceAgent,
 } from '../lib/types'
 import { Bot, SquareTerminal, UserRound } from 'lucide-vue-next'
 import {
@@ -20,25 +21,23 @@ import {
   fetchEvents,
   fetchGates,
   fetchSession,
-  fetchSubagent,
-  fetchSubagentActivity,
-  fetchSubagents,
+  fetchAgent,
+  fetchAgentActivity,
 } from '../lib/api'
 import { axisTicks, fmtDate, payloadOk, ts } from '../lib/format'
 import { modelIcon, modelName } from '../lib/models'
 import { agentColor, hexAlpha, parseAgentStart } from '../lib/events'
-import { navigate, phaseCrumb } from '../lib/router'
+import { navigate, agentCrumb } from '../lib/router'
 import StatusChip from './StatusChip.vue'
 import StatChip from './StatChip.vue'
-import PhaseDetail from './PhaseDetail.vue'
-import SubagentInspector from './SubagentInspector.vue'
-import { mergeActivities } from '../lib/subagents'
+import AgentDetailPanel from './AgentDetail.vue'
+import { activityPosition, buildAgentHierarchy, lifecycleGeometry, mergeActivities } from '../lib/agents'
 
-const props = defineProps<{ adwId: string; phaseId: string | null }>()
+const props = defineProps<{ adwId: string; agentId: string | null }>()
 
 const session = ref<Session | null>(null)
 const phases = ref<Phase[]>([])
-const agents = ref<AgentSession[]>([])
+const agents = ref<TraceAgent[]>([])
 const usage = ref<SessionUsage>({ read: 0, written: 0 })
 const events = ref<EventRow[]>([])
 const envelopes = ref<Envelope[]>([])
@@ -46,13 +45,11 @@ const gates = ref<GateResult[]>([])
 const apiError = ref<string | null>(null)
 const loaded = ref(false)
 const nowMs = ref(Date.now())
-const subagents = ref<SubagentSummary[]>([])
-const selectedSubagentId = ref<string | null>(null)
-const subagentDetail = ref<SubagentDetail | null>(null)
-const subagentActivities = ref<SubagentActivity[]>([])
+const agentDetail = ref<AgentDetail | null>(null)
+const activitiesByAgent = ref<Record<string, AgentActivity[]>>({})
 
 let cursor = 0
-let activityCursor = 0
+const activityCursors: Record<string, number> = {}
 let inflight = false
 let disposed = false
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -78,20 +75,23 @@ async function tick() {
     agents.value = detail.agents
     usage.value = detail.usage
 
-    const childRoster = await fetchSubagents(props.adwId)
-    subagents.value = childRoster
-    if (!selectedSubagentId.value && childRoster.length) selectedSubagentId.value = childRoster[0]!.subagent_id
-    let activityHasMore = false
-    if (selectedSubagentId.value && childRoster.some((c) => c.subagent_id === selectedSubagentId.value)) {
-      const [child, activityPage] = await Promise.all([
-        fetchSubagent(props.adwId, selectedSubagentId.value),
-        fetchSubagentActivity(props.adwId, selectedSubagentId.value, activityCursor),
-      ])
-      subagentDetail.value = child
-      activityCursor = Math.max(activityCursor, activityPage.cursor)
-      subagentActivities.value = mergeActivities(subagentActivities.value, activityPage.activities)
-      activityHasMore = activityPage.has_more
-    }
+    const childRoster = detail.agents.filter((agent): agent is NestedAgent => agent.source === 'nested')
+    const pages = await Promise.all(childRoster.map(async (child) => {
+      const after = activityCursors[child.agent_id] ?? 0
+      const page = await fetchAgentActivity(props.adwId, child.agent_id, after)
+      activityCursors[child.agent_id] = Math.max(after, page.cursor)
+      activitiesByAgent.value = {
+        ...activitiesByAgent.value,
+        [child.agent_id]: mergeActivities(activitiesByAgent.value[child.agent_id] ?? [], page.activities),
+      }
+      return page
+    }))
+    const activityHasMore = pages.some((page) => page.has_more)
+    const selected = detail.agents.find((agent) => agent.agent_id === props.agentId)
+    if (selected?.source === 'nested') {
+      const selectedDetail = await fetchAgent(props.adwId, selected.agent_id)
+      if (props.agentId === selected.agent_id) agentDetail.value = selectedDetail
+    } else agentDetail.value = null
 
     // Exactly one bounded page is handled per turn. A backlog schedules its
     // next cursor page immediately, while an exhausted live trace waits.
@@ -133,16 +133,34 @@ onMounted(() => void tick())
 onUnmounted(() => {
   disposed = true
   clearTimeout(timer)
-  phaseCrumb.value = null
+  agentCrumb.value = null
 })
 
-const selectedPhase = computed(
-  () => phases.value.find((p) => p.phase_id === props.phaseId) ?? null,
-)
+const selectedAgent = computed(() => agents.value.find((agent) => agent.agent_id === props.agentId) ?? null)
+const selectedPhase = computed(() => {
+  const phaseId = selectedAgent.value?.source === 'configured'
+    ? selectedAgent.value.phase_id
+    : props.agentId
+  return phases.value.find((phase) => phase.phase_id === phaseId) ?? null
+})
 
 watchEffect(() => {
-  phaseCrumb.value = selectedPhase.value?.name ?? null
+  agentCrumb.value = selectedAgent.value?.name ?? selectedPhase.value?.name ?? null
 })
+
+// Completed traces stop polling, so a later click must still lazy-load its detail.
+watch(
+  () => [props.agentId, selectedAgent.value?.source] as const,
+  async ([id, source]) => {
+    if (!id || source !== 'nested') { agentDetail.value = null; return }
+    try {
+      const detail = await fetchAgent(props.adwId, id)
+      if (props.agentId === id) agentDetail.value = detail
+    } catch (error) {
+      if (props.agentId === id) apiError.value = error instanceof Error ? error.message : String(error)
+    }
+  },
+)
 
 // ── Lanes ────────────────────────────────────────────────────────────────────
 
@@ -173,7 +191,7 @@ interface LaneContext {
 
 /** Occupancy for an agent lane. Null unless BOTH numbers are real — a bar
  *  against an unknown ceiling would be decoration, not data. */
-function laneContext(info: AgentSession | undefined): LaneContext | null {
+function laneContext(info: ConfiguredAgent | undefined): LaneContext | null {
   const used = info?.context_tokens ?? 0
   const window = info?.context_window ?? 0
   if (!used || !window) return null
@@ -241,7 +259,7 @@ const lanes = computed<Lane[]>(() => {
     })
   }
   for (const [i, owner] of agentOwners.entries()) {
-    const info = agents.value.find((a) => a.agent === owner)
+    const info = agents.value.find((a): a is ConfiguredAgent => a.source === 'configured' && a.agent === owner)
     const start = ownerStart.value[owner]
     out.push({
       id: `agent:${owner}`,
@@ -277,6 +295,17 @@ const range = computed(() => {
       t1 = Math.max(t1, a)
     }
     if (Number.isFinite(b)) t1 = Math.max(t1, b)
+  }
+  for (const agent of agents.value) {
+    if (agent.source !== 'nested') continue
+    const a = ts(agent.started_at ?? agent.created_at)
+    const b = agent.status === 'running' ? nowMs.value : ts(agent.ended_at)
+    if (Number.isFinite(a)) { t0 = Math.min(t0, a); t1 = Math.max(t1, a) }
+    if (Number.isFinite(b)) t1 = Math.max(t1, b)
+    for (const activity of activitiesByAgent.value[agent.agent_id] ?? []) {
+      const at = ts(activity.started_at)
+      if (Number.isFinite(at)) { t0 = Math.min(t0, at); t1 = Math.max(t1, at) }
+    }
   }
   if (s?.status === 'running') t1 = Math.max(t1, nowMs.value)
   if (!Number.isFinite(t0)) {
@@ -427,16 +456,41 @@ interface ToolTick {
   ok: boolean
 }
 
-const nestedByPhase = computed<Record<string, { count: number; running: number }>>(() => {
-  const map: Record<string, { count: number; running: number }> = {}
-  for (const child of subagents.value) {
-    if (!child.phase_id) continue
-    const stats = (map[child.phase_id] ??= { count: 0, running: 0 })
-    stats.count += 1
-    if (child.status === 'running') stats.running += 1
+interface NestedLaneRow { agent: NestedAgent; depth: number }
+const hierarchy = computed(() => buildAgentHierarchy(agents.value))
+
+function childrenForLane(lane: Lane): NestedLaneRow[] {
+  const phaseIds = new Set(lane.phases.map((phase) => phase.phase_id))
+  const rows: NestedLaneRow[] = []
+  let belongsToLane = false
+  for (const row of hierarchy.value) {
+    if (!row.agent) { belongsToLane = false; continue }
+    if (row.agent.source === 'configured') {
+      belongsToLane = phaseIds.has(row.agent.agent_id)
+    } else if (belongsToLane && !row.unresolved) {
+      rows.push({ agent: row.agent, depth: row.depth })
+    }
   }
-  return map
-})
+  return rows
+}
+
+const unresolvedChildren = computed<NestedLaneRow[]>(() => hierarchy.value
+  .filter((row): row is typeof row & { agent: NestedAgent } => row.unresolved && row.agent?.source === 'nested')
+  .map((row) => ({ agent: row.agent, depth: row.depth })))
+
+function childGeom(child: NestedAgent): { left: string; width: string } | null {
+  const raw = lifecycleGeometry(child, originMs.value, postSpan.value, nowMs.value, 1.2)
+  if (!raw) return null
+  const zone = zonePct.value
+  const avail = 100 - zone
+  return { left: `${zone + raw.left * avail / 100}%`, width: `${raw.width * avail / 100}%` }
+}
+
+function childMark(activity: AgentActivity): string | null {
+  const raw = activityPosition(activity, originMs.value, postSpan.value)
+  if (raw === null) return null
+  return `${zonePct.value + raw * (100 - zonePct.value) / 100}%`
+}
 
 const toolTicks = computed(() => {
   const map: Record<string, ToolTick[]> = {}
@@ -480,16 +534,11 @@ const sessionDurationMs = computed(() => {
 })
 
 function selectPhase(p: Phase) {
-  navigate(props.adwId, p.phase_id === props.phaseId ? null : p.phase_id)
+  navigate(props.adwId, p.phase_id === props.agentId ? null : p.phase_id)
 }
 
-function selectSubagent(id: string) {
-  if (selectedSubagentId.value === id) return
-  selectedSubagentId.value = id
-  subagentDetail.value = null
-  subagentActivities.value = []
-  activityCursor = 0
-  if (!inflight) void tick()
+function selectAgent(id: string) {
+  navigate(props.adwId, id === props.agentId ? null : id)
 }
 </script>
 
@@ -525,7 +574,8 @@ function selectSubagent(id: string) {
         </div>
       </div>
 
-      <div v-for="lane in lanes" :key="lane.id" class="row lane" :class="`kind-${lane.kind}`">
+      <template v-for="lane in lanes" :key="lane.id">
+      <div class="row lane" :class="`kind-${lane.kind}`">
         <div class="label">
           <span class="lane-name" :style="{ color: lane.color }">
             <component :is="KIND_ICONS[lane.kind]" class="lane-icon" :size="22" :stroke-width="2" />
@@ -564,7 +614,7 @@ function selectSubagent(id: string) {
             <button
               v-if="blockGeom(p)"
               class="block"
-              :class="[p.status, { selected: p.phase_id === phaseId }]"
+              :class="[p.status, { selected: p.phase_id === agentId }]"
               :style="blockStyle(p, lane)"
               :title="`${p.name} — ${p.status}${p.description ? `\n${p.description}` : ''}`"
               @click="selectPhase(p)"
@@ -574,14 +624,6 @@ function selectSubagent(id: string) {
                   STATUS_GLYPH[p.status ?? ''] ?? '○'
                 }}</span>
                 <span class="b-name">{{ p.name }}</span>
-                <span
-                  v-if="nestedByPhase[p.phase_id]"
-                  class="nested-badge"
-                  :class="{ live: nestedByPhase[p.phase_id]!.running > 0 }"
-                  :title="`${nestedByPhase[p.phase_id]!.count} nested subagent conversations, ${nestedByPhase[p.phase_id]!.running} live`"
-                >
-                  {{ nestedByPhase[p.phase_id]!.count }} nested<span v-if="nestedByPhase[p.phase_id]!.running"> · {{ nestedByPhase[p.phase_id]!.running }} live</span>
-                </span>
                 <StatChip
                   v-if="Number.isFinite(blockDurationMs(p))"
                   class="b-dur"
@@ -604,7 +646,7 @@ function selectSubagent(id: string) {
             v-for="(p, i) in queuedByLane[lane.id]"
             :key="p.phase_id"
             class="block queued"
-            :class="{ selected: p.phase_id === phaseId }"
+            :class="{ selected: p.phase_id === agentId }"
             :style="{ right: `${10 + i * 5}px`, width: '170px' }"
             :title="`${p.name} — queued`"
             @click="selectPhase(p)"
@@ -617,25 +659,50 @@ function selectSubagent(id: string) {
           </button>
         </div>
       </div>
+      <div v-for="childRow in childrenForLane(lane)" :key="childRow.agent.agent_id" class="row lane child-row">
+        <div class="label child-label" :style="{ paddingLeft: `${42 + Math.max(0, childRow.depth - 1) * 18}px` }">
+          <span class="branch">↳</span>
+          <span class="lane-name">#{{ childRow.agent.display_id ?? '?' }} · {{ childRow.agent.subagent_id }}</span>
+          <span class="lane-meta lane-model"><img v-if="modelIcon(childRow.agent.model)" class="model-icon" :src="modelIcon(childRow.agent.model)!" alt="" />{{ modelName(childRow.agent.model) }}</span>
+          <span class="lane-meta">{{ childRow.agent.status }} · {{ childRow.agent.turn_count }} turn{{ childRow.agent.turn_count === 1 ? '' : 's' }} · {{ childRow.agent.tool_count }} tools</span>
+        </div>
+        <div class="track child-track">
+          <span v-if="zonePct" class="zone-divider" :style="{ left: `${zonePct}%` }" />
+          <span v-for="(t, i) in ticks" :key="i" class="gridline" :style="{ left: `${t.pct}%` }" />
+          <button v-if="childGeom(childRow.agent)" class="block child-block" :class="[childRow.agent.status, { selected: childRow.agent.agent_id === agentId }]" :style="childGeom(childRow.agent)!" :title="childRow.agent.task ?? childRow.agent.name" @click="selectAgent(childRow.agent.agent_id)">
+            <span class="b-top"><span class="b-status" :class="childRow.agent.status">{{ STATUS_GLYPH[childRow.agent.status ?? ''] ?? '✗' }}</span><span class="b-name">{{ childRow.agent.task ?? childRow.agent.name }}</span></span>
+            <span class="b-desc">{{ childRow.agent.thinking ?? 'default' }} thinking</span>
+          </button>
+          <span v-for="tool in activitiesByAgent[childRow.agent.agent_id] ?? []" :key="tool.cursor" class="child-tool-tick" :class="{ err: tool.ok === 0 }" :style="{ left: childMark(tool) ?? '-10px' }" :title="`${tool.tool ?? 'tool'} · turn ${tool.turn ?? '—'}`" />
+        </div>
+      </div>
+      </template>
+      <div v-if="unresolvedChildren.length" class="row lane unresolved-row">
+        <div class="label"><span class="lane-name">Unresolved parent</span><span class="lane-meta">legacy nested agents</span></div>
+        <div class="track"><span v-for="(t, i) in ticks" :key="i" class="gridline" :style="{ left: `${t.pct}%` }" /></div>
+      </div>
+      <div v-for="childRow in unresolvedChildren" :key="childRow.agent.agent_id" class="row lane child-row">
+        <div class="label child-label" :style="{ paddingLeft: `${42 + Math.max(0, childRow.depth - 1) * 18}px` }"><span class="branch">↳</span><span class="lane-name">#{{ childRow.agent.display_id ?? '?' }} · {{ childRow.agent.subagent_id }}</span><span class="lane-meta">{{ childRow.agent.parent_agent ?? 'unknown parent' }} · {{ childRow.agent.status }}</span></div>
+        <div class="track child-track">
+          <span v-for="(t, i) in ticks" :key="i" class="gridline" :style="{ left: `${t.pct}%` }" />
+          <button v-if="childGeom(childRow.agent)" class="block child-block" :class="[childRow.agent.status, { selected: childRow.agent.agent_id === agentId }]" :style="childGeom(childRow.agent)!" :title="childRow.agent.task ?? childRow.agent.name" @click="selectAgent(childRow.agent.agent_id)"><span class="b-top"><span class="b-name">{{ childRow.agent.task ?? childRow.agent.name }}</span></span></button>
+          <span v-for="tool in activitiesByAgent[childRow.agent.agent_id] ?? []" :key="tool.cursor" class="child-tool-tick" :class="{ err: tool.ok === 0 }" :style="{ left: childMark(tool) ?? '-10px' }" />
+        </div>
+      </div>
     </div>
     <div v-else-if="loaded" class="empty-state">no phases recorded for this session</div>
     <div v-else-if="!apiError" class="empty-state">loading trace…</div>
 
-    <SubagentInspector
-      :children="subagents"
-      :selected-id="selectedSubagentId"
-      :detail="subagentDetail"
-      :activities="subagentActivities"
-      :now-ms="nowMs"
-      @select="selectSubagent"
-    />
-
-    <PhaseDetail
-      v-if="selectedPhase"
+    <AgentDetailPanel
+      v-if="selectedPhase || selectedAgent"
+      :agent="selectedAgent"
       :phase="selectedPhase"
+      :detail="agentDetail"
+      :activities="selectedAgent ? (activitiesByAgent[selectedAgent.agent_id] ?? []) : []"
       :events="events"
       :envelopes="envelopes"
       :gates="gates"
+      :now-ms="nowMs"
       @close="navigate(props.adwId)"
     />
   </div>
@@ -955,4 +1022,14 @@ function selectSubagent(id: string) {
   background: var(--red);
   opacity: 1;
 }
+
+.child-row { background: rgba(8, 12, 20, 0.35); }
+.child-label { position: relative; padding-left: 42px; }
+.child-label .lane-name { font-family: var(--mono); font-size: 14px; color: var(--text); overflow-wrap: anywhere; white-space: normal; }
+.branch { position: absolute; left: 18px; top: 16px; color: var(--faint); font-size: 20px; }
+.child-track { height: 86px; }
+.child-block { top: 10px; height: 66px; padding: 8px 10px 13px; background: linear-gradient(180deg, rgba(108, 182, 255, .16), rgba(108, 182, 255, .04)); border-color: rgba(108, 182, 255, .5); --lane-glow: rgba(108, 182, 255, .25); }
+.child-block.error,.child-block.cancelled,.child-block.killed,.child-block.interrupted { border-color: rgba(255, 111, 103, .8); }
+.child-tool-tick { position: absolute; bottom: 4px; width: 3px; height: 10px; border-radius: 2px; background: var(--green); z-index: 2; }
+.child-tool-tick.err { background: var(--red); }
 </style>

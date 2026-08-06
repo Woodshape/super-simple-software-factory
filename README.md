@@ -268,7 +268,7 @@ That one cursor query is the entire transport. Live view and full history are th
 
 Files stay the raw record (`raw_output.jsonl`, `envelope.json`, `agent_map.json`). The db is the queryable mirror. Losing it loses nothing you cannot rebuild.
 
-The skill ships a local read-only UI for this db at `.claude/skills/sssf/apps/visualizer/`: Vue and Vite served by Bun on loopback port 4600, with sessions, a trace waterfall, per-phase tool-call detail, and live/historical inspection of nested Pi subagents, their continuation turns, results, and child tools.
+The skill ships a local read-only UI for this db at `.claude/skills/sssf/apps/visualizer/`: Vue and Vite served by Bun on loopback port 4600, with sessions and a trace waterfall whose unified agent hierarchy places live and historical nested Pi agents beneath their configured parent on the shared time axis. Configured and nested agents use the same detail interaction for identity, prompts/tasks, model/thinking, turns, results, and tools; configured-only session cards remain unchanged.
 
 ```bash
 cd .claude/skills/sssf/apps/visualizer && bun install
