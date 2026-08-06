@@ -7,13 +7,13 @@
 Usage:
     uv run adws/adw_plan_build.py "<prompt or path/to/prompt.md>" [--config adws/adw_sssf_config/sssf.config.yaml] [--adw-id a1b2c3d4]
 
-Phases: engineer(request) -> planner -> builder -> git(commit)
+Phases: engineer(request) -> planner -> code(spec_start) -> builder -> git(commit)
 """
 
 import argparse
 import sys
 
-from adw_modules import agents, gates, git_helper, session, utils
+from adw_modules import agents, gates, git_helper, session, specs, utils
 from adw_modules.data_types import AgentCall, BuildOutput, PhaseParams, PlanOutput
 
 REQUIRED_AGENTS = ["planner", "builder"]
@@ -31,7 +31,13 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
     with run.phase(PhaseParams(name="plan", kind="agent", owner="planner",
                                description="Turn the request into an implementable plan")) as ph:
         plan = ph.call(AgentCall(output_type=PlanOutput, prompt=prompt,
-                                 gates=[gates.artifacts_exist, gates.files_non_empty]))
+                                 gates=[gates.artifacts_exist, gates.files_non_empty,
+                                        gates.plan_spec_valid]))
+
+    with run.phase(PhaseParams(name="spec_start", kind="code", owner="specs",
+                               description="Mark the durable plan in progress before implementation starts")) as ph:
+        artifacts = specs.transition_plan(plan, run, "in_progress")
+        ph.log(spec=str(artifacts.authoritative), status="in_progress")
 
     with run.phase(PhaseParams(name="build", kind="agent", owner="builder",
                                description="Implement the plan exactly")) as ph:

@@ -1,3 +1,7 @@
+---
+status: complete
+---
+
 # Plan: harden and scale the observability UI
 
 ## Objective

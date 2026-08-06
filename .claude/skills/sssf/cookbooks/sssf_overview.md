@@ -15,7 +15,7 @@ adws/
 ├── adw_sssf_config/
 │   └── sssf.config.yaml         the agent roster — one agent, one prompt, one purpose
 ├── adw_prompt.py                smallest ADW: one agent, one prompt, traced end-to-end
-├── adw_plan.py, adw_scout.py, adw_build.py, adw_plan_build.py, adw_build_test.py, adw_plan_build_test.py
+├── adw_plan.py, adw_scout.py, adw_scout_plan.py, adw_build.py, adw_plan_build.py, adw_build_test.py, adw_plan_build_test.py
 ├── adw_build_review.py          build → review: is this what was asked for? (not testing)
 ├── adw_document.py              write up the work just done, from git diff vs main
 ├── adw_simple_sdlc.py           plan → build → test → review → document; commits each product
@@ -58,11 +58,14 @@ Agents have exactly two output channels: reference files written into `context_h
 ## Running an ADW
 
 ```bash
+just scout-plan "map the auth flow and plan an update"
 uv run adws/adw_plan.py "add a /health endpoint"
 uv run adws/adw_plan_build.py requests/health.md --adw-id a1b2c3d4
 ```
 
 The prompt is inline text or a file path. `--adw-id` is optional on every ADW: given one, the run joins that session (same dirs, same `context_handoff/`, agents resume their existing context windows); omitted, a fresh id is minted and printed.
+
+`just specs` lists durable plan lifecycle from validated frontmatter. It reports malformed legacy files as errors rather than guessing. Planner/build chains update lifecycle in visible code phases, while standalone work requires an engineer to name the exact spec in `just specs transition ...`; operational run status never writes lifecycle implicitly.
 
 ## When you have finished reading this
 

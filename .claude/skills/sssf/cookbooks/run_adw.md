@@ -19,7 +19,10 @@ uv run adws/<end-to-end-chain>.py "add a /health endpoint"
 uv run adws/<plan-build-verify-chain>.py requests/health.md
 uv run adws/<build-first-chain>.py "implement the plan" --adw-id a1b2c3d4
 uv run adws/<recon-chain>.py "where is auth handled" --config path/to/other.config.yaml
+just scout-plan "map auth before planning"
 ```
+
+`just scout-plan` runs exactly `request`, `scout`, and `plan`. The planner receives the scout's typed `ScoutOutput`; the workflow does not build, test, review, document, or commit anything. A green run means the recon and plan artifacts passed their existence/non-empty gates, not that the planned implementation is complete. Keep its printed `adw_id` to hand the session to a later build workflow.
 
 The prompt is inline text or a file path. Launch in the background so you can poll while it works; the `adw_id` is printed on startup — capture it, everything else keys off it.
 
@@ -65,6 +68,8 @@ Two things that bite:
 - **Switching rosters mid-session breaks resumption.** `agent_map.json` records the model each coding-agent session was created with, so a joined run (`--adw-id`) whose config now names a different model starts that agent **fresh** instead of resuming its context window. That is deliberate — a bad resume is worse — but it means "plan on the frontier roster, then build on the default" costs the builder its accumulated context. Say so when you report it.
 
 `--adw-id` is optional on **every** ADW. Given one, the run joins that session if it exists or creates it pinned to exactly that id: same `sessions/{adw_id}/` dirs, same `context_handoff/`, envelopes appended, and each agent resumes its existing coding-agent context window via `agent_map.json`. That is how you chain ADWs — plan under one id, then build under the same id.
+
+A build-only workflow has no unambiguous `PlanOutput`, so it never guesses a durable spec from the session id. Before standalone implementation, the engineer explicitly runs `just specs transition in_progress specs/<file>.md [mirror ...]`; after reviewing equivalent acceptance evidence, they may explicitly transition it to `complete`. ADWs that own a plan perform these writes in visible `owner="specs"` code phases. Run/session success alone is not a lifecycle verdict.
 
 ## Observe
 

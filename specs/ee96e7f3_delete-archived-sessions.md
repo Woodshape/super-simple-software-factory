@@ -1,3 +1,7 @@
+---
+status: planned
+---
+
 # Plan: permanently delete archived visualizer sessions
 
 ## Objective

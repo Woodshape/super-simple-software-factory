@@ -6,12 +6,12 @@ Compose a new ADW script — a thin, deterministic Python workflow over agents a
 
 Answer four questions, in order:
 
-1. **What agents, in what order?** Pick from the roster (`adws/adw_sssf_config/sssf.config.yaml`). The starter six cover most chains:
+1. **What agents, in what order?** Pick from the roster (`adws/adw_sssf_config/sssf.config.yaml`). The five starter agents cover most chains:
 
 | Agent | Use when | Output type | Typical gates |
 |---|---|---|---|
 | `scout` | you need to FIND something first — read-only recon | `ScoutOutput` | `artifacts_exist` |
-| `planner` | the work needs a plan before code changes | `PlanOutput` | `artifacts_exist`, `files_non_empty` |
+| `planner` | the work needs a plan before code changes | `PlanOutput` | `artifacts_exist`, `files_non_empty`, `plan_spec_valid` |
 | `builder` | code must change | `BuildOutput` | `diff_matches_claims` |
 | `reviewer` | the change must be confirmed to BE what was asked for | `ReviewOutput` | `artifacts_exist`, `verdict_consistent` |
 | *(no tester)* | verifying that it RUNS is a `kind="code"` phase over `quality.py`, not an agent | `QualityResult` → `as_envelope` | the exit code is the check |
@@ -19,6 +19,8 @@ Answer four questions, in order:
 | any agent, generic ask | one-off prompt, no special shape | `GenericOutput` | as needed |
 
    A new kind of agent needs a config entry + prompt pair + output type first — see `update_config.md`.
+
+   The existing scout-to-planner shape needs no new roster entry: call the scout with `output_type=ScoutOutput`, retain the result, then call the planner with `output_type=PlanOutput` and `previous=found`. Use `artifacts_exist` on recon and `artifacts_exist`, `files_non_empty`, plus `plan_spec_valid` on the plan; stop there when the request is plan-only.
 
    **The suite and the reviewer answer different questions.** "Does it run" is a test, and code can ask that. "Is this the thing that was asked for" is a review, and only an agent can. A green suite over a feature nobody requested is still a failed request, and neither one covers for the other.
 
@@ -28,7 +30,7 @@ Answer four questions, in order:
 
 3. **Does anything loop?** Test-fix cycles are bounded fix loops (see `update_adw.md`), not phase retries.
 
-4. **What does each call need to prove?** Pick gates per call from `gates.py`: `artifacts_exist`, `files_non_empty`, `json_parses`, `diff_matches_claims`, `tests_pass("cmd")` — or an inline one-off.
+4. **What does each call need to prove?** Pick gates per call from `gates.py`: `artifacts_exist`, `files_non_empty`, `plan_spec_valid`, `json_parses`, `diff_matches_claims`, `tests_pass("cmd")` — or an inline one-off.
 
 ## Step 2 — Ownership rules (the swim lanes depend on these)
 
@@ -61,7 +63,7 @@ Every `adw_*.py`, generated or hand-written, is a `uv` single-file script with t
 import argparse
 import sys
 
-from adw_modules import agents, gates, git_helper, session, utils
+from adw_modules import agents, gates, git_helper, session, specs, utils
 from adw_modules.data_types import AgentCall, BuildOutput, PhaseParams, PlanOutput
 
 REQUIRED_AGENTS = ["planner", "builder"]        # names, never models
@@ -79,7 +81,13 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
     with run.phase(PhaseParams(name="plan", kind="agent", owner="planner",
                                description="Turn the request into an implementable plan")) as ph:
         plan = ph.call(AgentCall(output_type=PlanOutput, prompt=prompt,
-                                 gates=[gates.artifacts_exist, gates.files_non_empty]))
+                                 gates=[gates.artifacts_exist, gates.files_non_empty,
+                                        gates.plan_spec_valid]))
+
+    with run.phase(PhaseParams(name="spec_start", kind="code", owner="specs",
+                               description="Mark the durable plan in progress before implementation starts")) as ph:
+        artifacts = specs.transition_plan(plan, run, "in_progress")
+        ph.log(spec=str(artifacts.authoritative), status="in_progress")
 
     with run.phase(PhaseParams(name="build", kind="agent", owner="builder", retries=1,
                                description="Implement the plan exactly")) as ph:
