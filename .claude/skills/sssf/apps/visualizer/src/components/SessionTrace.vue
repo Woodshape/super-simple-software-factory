@@ -31,7 +31,7 @@ import { navigate, agentCrumb } from '../lib/router'
 import StatusChip from './StatusChip.vue'
 import StatChip from './StatChip.vue'
 import AgentDetailPanel from './AgentDetail.vue'
-import { activityPosition, buildAgentHierarchy, lifecycleGeometry, mergeActivities } from '../lib/agents'
+import { activityPosition, buildAgentHierarchy, lifecycleGeometry, mergeActivities, nestedRowsForConfiguredParents } from '../lib/agents'
 
 const props = defineProps<{ adwId: string; agentId: string | null }>()
 
@@ -458,21 +458,38 @@ interface ToolTick {
 
 interface NestedLaneRow { agent: NestedAgent; depth: number }
 const hierarchy = computed(() => buildAgentHierarchy(agents.value))
+const collapsedChildLanes = ref<Set<string>>(new Set())
 
 function childrenForLane(lane: Lane): NestedLaneRow[] {
-  const phaseIds = new Set(lane.phases.map((phase) => phase.phase_id))
-  const rows: NestedLaneRow[] = []
-  let belongsToLane = false
-  for (const row of hierarchy.value) {
-    if (!row.agent) { belongsToLane = false; continue }
-    if (row.agent.source === 'configured') {
-      belongsToLane = phaseIds.has(row.agent.agent_id)
-    } else if (belongsToLane && !row.unresolved) {
-      rows.push({ agent: row.agent, depth: row.depth })
+  return nestedRowsForConfiguredParents(
+    hierarchy.value,
+    new Set(lane.phases.map((phase) => phase.phase_id)),
+  )
+}
+
+function childrenExpanded(lane: Lane): boolean {
+  return !collapsedChildLanes.value.has(lane.id)
+}
+
+function toggleChildren(lane: Lane) {
+  const children = childrenForLane(lane)
+  if (!children.length) return
+  const collapsed = new Set(collapsedChildLanes.value)
+  if (collapsed.has(lane.id)) {
+    collapsed.delete(lane.id)
+  } else {
+    collapsed.add(lane.id)
+    if (props.agentId && children.some((row) => row.agent.agent_id === props.agentId)) {
+      agentDetail.value = null
+      navigate(props.adwId)
     }
   }
-  return rows
+  collapsedChildLanes.value = collapsed
 }
+
+const selectedChildHidden = computed(() => selectedAgent.value?.source === 'nested'
+  && lanes.value.some((lane) => !childrenExpanded(lane)
+    && childrenForLane(lane).some((row) => row.agent.agent_id === selectedAgent.value?.agent_id)))
 
 const unresolvedChildren = computed<NestedLaneRow[]>(() => hierarchy.value
   .filter((row): row is typeof row & { agent: NestedAgent } => row.unresolved && row.agent?.source === 'nested')
@@ -605,6 +622,15 @@ function selectAgent(id: string) {
               />
             </span>
           </span>
+          <button
+            v-if="lane.kind === 'agent' && childrenForLane(lane).length"
+            type="button"
+            class="subagent-toggle"
+            :aria-expanded="childrenExpanded(lane)"
+            @click="toggleChildren(lane)"
+          >
+            {{ childrenExpanded(lane) ? 'Hide subagents' : 'Show subagents' }}
+          </button>
           <span v-for="(line, i) in lane.metaLines" :key="i" class="lane-meta">{{ line }}</span>
         </div>
         <div class="track">
@@ -659,23 +685,25 @@ function selectAgent(id: string) {
           </button>
         </div>
       </div>
-      <div v-for="childRow in childrenForLane(lane)" :key="childRow.agent.agent_id" class="row lane child-row">
-        <div class="label child-label" :style="{ paddingLeft: `${42 + Math.max(0, childRow.depth - 1) * 18}px` }">
-          <span class="branch">↳</span>
-          <span class="lane-name">#{{ childRow.agent.display_id ?? '?' }} · {{ childRow.agent.subagent_id }}</span>
-          <span class="lane-meta lane-model"><img v-if="modelIcon(childRow.agent.model)" class="model-icon" :src="modelIcon(childRow.agent.model)!" alt="" />{{ modelName(childRow.agent.model) }}</span>
-          <span class="lane-meta">{{ childRow.agent.status }} · {{ childRow.agent.turn_count }} turn{{ childRow.agent.turn_count === 1 ? '' : 's' }} · {{ childRow.agent.tool_count }} tools</span>
+      <template v-if="childrenExpanded(lane)">
+        <div v-for="childRow in childrenForLane(lane)" :key="childRow.agent.agent_id" class="row lane child-row">
+          <div class="label child-label" :style="{ paddingLeft: `${42 + Math.max(0, childRow.depth - 1) * 18}px` }">
+            <span class="branch">↳</span>
+            <span class="lane-name">#{{ childRow.agent.display_id ?? '?' }} · {{ childRow.agent.subagent_id }}</span>
+            <span class="lane-meta lane-model"><img v-if="modelIcon(childRow.agent.model)" class="model-icon" :src="modelIcon(childRow.agent.model)!" alt="" />{{ modelName(childRow.agent.model) }}</span>
+            <span class="lane-meta">{{ childRow.agent.status }} · {{ childRow.agent.turn_count }} turn{{ childRow.agent.turn_count === 1 ? '' : 's' }} · {{ childRow.agent.tool_count }} tools</span>
+          </div>
+          <div class="track child-track">
+            <span v-if="zonePct" class="zone-divider" :style="{ left: `${zonePct}%` }" />
+            <span v-for="(t, i) in ticks" :key="i" class="gridline" :style="{ left: `${t.pct}%` }" />
+            <button v-if="childGeom(childRow.agent)" class="block child-block" :class="[childRow.agent.status, { selected: childRow.agent.agent_id === agentId }]" :style="childGeom(childRow.agent)!" :title="childRow.agent.task ?? childRow.agent.name" @click="selectAgent(childRow.agent.agent_id)">
+              <span class="b-top"><span class="b-status" :class="childRow.agent.status">{{ STATUS_GLYPH[childRow.agent.status ?? ''] ?? '✗' }}</span><span class="b-name">{{ childRow.agent.task ?? childRow.agent.name }}</span></span>
+              <span class="b-desc">{{ childRow.agent.thinking ?? 'default' }} thinking</span>
+            </button>
+            <span v-for="tool in activitiesByAgent[childRow.agent.agent_id] ?? []" :key="tool.cursor" class="child-tool-tick" :class="{ err: tool.ok === 0 }" :style="{ left: childMark(tool) ?? '-10px' }" :title="`${tool.tool ?? 'tool'} · turn ${tool.turn ?? '—'}`" />
+          </div>
         </div>
-        <div class="track child-track">
-          <span v-if="zonePct" class="zone-divider" :style="{ left: `${zonePct}%` }" />
-          <span v-for="(t, i) in ticks" :key="i" class="gridline" :style="{ left: `${t.pct}%` }" />
-          <button v-if="childGeom(childRow.agent)" class="block child-block" :class="[childRow.agent.status, { selected: childRow.agent.agent_id === agentId }]" :style="childGeom(childRow.agent)!" :title="childRow.agent.task ?? childRow.agent.name" @click="selectAgent(childRow.agent.agent_id)">
-            <span class="b-top"><span class="b-status" :class="childRow.agent.status">{{ STATUS_GLYPH[childRow.agent.status ?? ''] ?? '✗' }}</span><span class="b-name">{{ childRow.agent.task ?? childRow.agent.name }}</span></span>
-            <span class="b-desc">{{ childRow.agent.thinking ?? 'default' }} thinking</span>
-          </button>
-          <span v-for="tool in activitiesByAgent[childRow.agent.agent_id] ?? []" :key="tool.cursor" class="child-tool-tick" :class="{ err: tool.ok === 0 }" :style="{ left: childMark(tool) ?? '-10px' }" :title="`${tool.tool ?? 'tool'} · turn ${tool.turn ?? '—'}`" />
-        </div>
-      </div>
+      </template>
       </template>
       <div v-if="unresolvedChildren.length" class="row lane unresolved-row">
         <div class="label"><span class="lane-name">Unresolved parent</span><span class="lane-meta">legacy nested agents</span></div>
@@ -694,7 +722,7 @@ function selectAgent(id: string) {
     <div v-else-if="!apiError" class="empty-state">loading trace…</div>
 
     <AgentDetailPanel
-      v-if="selectedPhase || selectedAgent"
+      v-if="(selectedPhase || selectedAgent) && !selectedChildHidden"
       :agent="selectedAgent"
       :phase="selectedPhase"
       :detail="agentDetail"
@@ -872,6 +900,27 @@ function selectAgent(id: string) {
   height: 100%;
   border-radius: 999px;
   transition: width 300ms ease;
+}
+
+.subagent-toggle {
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  font-family: var(--mono);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.subagent-toggle:hover {
+  color: var(--text);
+}
+
+.subagent-toggle:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 3px;
 }
 
 .lane {

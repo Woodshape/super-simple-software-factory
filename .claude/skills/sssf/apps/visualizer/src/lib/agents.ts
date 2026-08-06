@@ -146,6 +146,29 @@ export interface AgentHierarchyRow {
   label?: string
 }
 
+export interface NestedAgentHierarchyRow {
+  agent: NestedAgent
+  depth: number
+}
+
+/** Return the intact nested branch belonging to one or more configured nodes. */
+export function nestedRowsForConfiguredParents(
+  hierarchy: AgentHierarchyRow[],
+  parentAgentIds: ReadonlySet<string>,
+): NestedAgentHierarchyRow[] {
+  const rows: NestedAgentHierarchyRow[] = []
+  let belongsToParent = false
+  for (const row of hierarchy) {
+    if (!row.agent) { belongsToParent = false; continue }
+    if (row.agent.source === 'configured') {
+      belongsToParent = parentAgentIds.has(row.agent.agent_id)
+    } else if (belongsToParent && !row.unresolved) {
+      rows.push({ agent: row.agent, depth: row.depth })
+    }
+  }
+  return rows
+}
+
 /** Configured nodes stay top-level; children recursively follow their spawning node. */
 export function buildAgentHierarchy(agents: TraceAgent[]): AgentHierarchyRow[] {
   const configured = agents.filter((agent): agent is ConfiguredAgent => agent.source === 'configured')
