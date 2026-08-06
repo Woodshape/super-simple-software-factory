@@ -5,18 +5,22 @@
  * the writers are the tracers of running ADW processes, and WAL lets us read
  * straight through their inserts.
  *
- * ONE exception, opened lazily on its own connection: `setArchived`. Archiving
- * is review triage — "I have looked at this run" — which has to outlive a
- * browser, so it lives on the session row rather than in localStorage. It is
- * the only write this process can make, it touches exactly one column, and it
- * never runs unless a human clicks the button.
+ * Human-triggered mutations use a separate connection opened lazily:
+ * archive/restore updates review state, while permanent deletion is guarded by
+ * that state and removes both the queryable mirror and the selected raw record.
  */
 import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
+import { existsSync, renameSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type {
+  AgentActivitiesPage,
+  AgentActivity,
+  AgentDetail,
   AgentSession,
   AgentStartPayload,
+  AgentTurn,
+  ConfiguredAgent,
   CardTimelineMarker,
   Envelope,
   Event,
@@ -27,18 +31,45 @@ import type {
   SessionDetail,
   SessionSummary,
   SessionUsage,
-  SubagentActivitiesPage,
-  SubagentActivity,
-  SubagentDetail,
-  SubagentSummary,
-  SubagentTurn,
+  NestedAgent,
+  TraceAgent,
 } from "../shared/types.ts";
 
 const DEFAULT_DB_RELATIVE = "adws/adw_data/sssf.db";
 const MAX_LIMIT = 1000;
 const DEFAULT_LIMIT = 500;
+const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
+
+export type DeleteArchivedSessionResult =
+  | "deleted"
+  | "not_found"
+  | "not_archived"
+  | "unsupported_archive_state";
+
 /** Maximum payload-free event markers embedded in one session-list card. */
 export const CARD_TIMELINE_MARKER_LIMIT = 120;
+interface StoredSubagent {
+  subagent_id: string;
+  adw_id: string;
+  phase_id: string | null;
+  parent_agent: string | null;
+  display_id: number | null;
+  parent_tool_call_id: string | null;
+  parent_event_id: string | null;
+  task: string | null;
+  model: string | null;
+  thinking: string | null;
+  session_path: string | null;
+  status: NestedAgent["status"];
+  created_at: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_ms: number | null;
+  removed_at: string | null;
+  turn_count: number;
+  tool_count: number;
+}
+
 const CARD_TIMELINE_TYPES = [
   "agent_start",
   "tool_call",
@@ -75,7 +106,7 @@ export class SssfDb {
   readonly sessionsDir: string;
   readonly journalMode: string;
   private readonly db: Database;
-  /** Opened on first archive and kept; null until then. */
+  /** Opened on the first human-triggered mutation and kept until close. */
   private writer: Database | null = null;
   /** Cache for optionalColumn(), keyed "table.column". Only ever false → true. */
   private readonly columnCache = new Map<string, boolean>();
@@ -157,8 +188,17 @@ export class SssfDb {
     this.db.close();
   }
 
+  /** Lazily open the connection reserved for explicit human mutations. */
+  private writable(): Database {
+    if (!this.writer) {
+      this.writer = new Database(this.path);
+      this.writer.exec("PRAGMA busy_timeout=5000;");
+    }
+    return this.writer;
+  }
+
   /**
-   * Archive or restore a session — the only write in this process.
+   * Archive or restore a session.
    *
    * busy_timeout matters: a run may be mid-insert on the same WAL db, and a
    * click should wait its turn rather than fail. Returns false when the id
@@ -168,14 +208,104 @@ export class SssfDb {
     if (!this.hasColumn("sessions", "archived")) {
       throw new Error("this db predates the archived column — run any ADW once to migrate it");
     }
-    if (!this.writer) {
-      this.writer = new Database(this.path);
-      this.writer.exec("PRAGMA busy_timeout=5000;");
-    }
-    this.writer
+    const result = this.writable()
       .query("UPDATE sessions SET archived = ? WHERE adw_id = ?")
       .run(archived ? 1 : 0, adwId);
-    return this.session(adwId) !== null;
+    return result.changes > 0;
+  }
+
+  /**
+   * Permanently remove an archived session's database projections and raw tree.
+   *
+   * The archive check and fixed, exact-id cascade share an immediate
+   * transaction. An existing raw path is first renamed to a same-parent
+   * tombstone; any failure before commit restores it, while successful commit
+   * is followed by recursive tombstone cleanup.
+   */
+  deleteArchivedSession(adwId: string): DeleteArchivedSessionResult {
+    const target = resolve(this.sessionsDir, adwId);
+    if (
+      !SAFE_SESSION_ID.test(adwId) ||
+      adwId === "." ||
+      adwId === ".." ||
+      dirname(target) !== this.sessionsDir
+    ) {
+      throw new Error("invalid adw_id");
+    }
+
+    const writer = this.writable();
+    let stagedPath: string | null = null;
+    const remove = writer.transaction((): DeleteArchivedSessionResult => {
+      const exists = writer
+        .query<{ present: number }, [string]>(
+          "SELECT 1 AS present FROM sessions WHERE adw_id = ?",
+        )
+        .get(adwId);
+      if (!exists) return "not_found";
+
+      const archivedColumn = writer
+        .query<{ name: string }, []>("PRAGMA table_info(sessions)")
+        .all()
+        .some((column) => column.name === "archived");
+      if (!archivedColumn) return "unsupported_archive_state";
+
+      const row = writer
+        .query<{ archived: unknown }, [string]>(
+          "SELECT archived FROM sessions WHERE adw_id = ?",
+        )
+        .get(adwId);
+      if (!row || row.archived !== 1) return "not_archived";
+
+      if (existsSync(target)) {
+        const tombstone = resolve(
+          this.sessionsDir,
+          `.sssf-delete-${adwId}-${randomUUID()}`,
+        );
+        renameSync(target, tombstone);
+        stagedPath = tombstone;
+      }
+
+      const tables = [
+        "subagent_activities",
+        "subagent_turns",
+        "subagents",
+        "events",
+        "envelopes",
+        "gate_results",
+        "processes",
+        "agent_sessions",
+        "phases",
+        "sessions",
+      ] as const;
+      for (const table of tables) {
+        if (table === "sessions" || this.hasTable(table)) {
+          writer.query(`DELETE FROM ${table} WHERE adw_id = ?`).run(adwId);
+        }
+      }
+      return "deleted";
+    });
+
+    let result: DeleteArchivedSessionResult;
+    try {
+      result = remove.immediate();
+    } catch (error) {
+      if (stagedPath) {
+        try {
+          renameSync(stagedPath, target);
+        } catch (restoreError) {
+          throw new Error(
+            `session deletion failed and raw data could not be restored: ${(restoreError as Error).message}`,
+            { cause: restoreError },
+          );
+        }
+      }
+      throw error;
+    }
+
+    if (result === "deleted" && stagedPath) {
+      rmSync(stagedPath, { recursive: true, force: true });
+    }
+    return result;
   }
 
   /** Sessions, most recent first, with all bounded card projections embedded. */
@@ -396,7 +526,101 @@ export class SssfDb {
     return byAdw;
   }
 
-  /** Session + phases + agents in one shot — L2 needs all three to draw lanes. */
+  /** Unified configured-phase and nested-child roster used only by the trace. */
+  traceAgents(adwId: string): TraceAgent[] {
+    const phases = this.phases(adwId);
+    const sessions = this.agentSessions(adwId);
+    const configured: ConfiguredAgent[] = [];
+
+    for (const phase of phases) {
+      if (phase.kind !== "agent") continue;
+      const info = sessions.find((row) => row.agent === phase.owner);
+      const events = this.db.query<Event, [string, string]>(
+        `SELECT rowid,event_id,adw_id,phase_id,parent_id,type,name,payload_json,tokens,started_at,ended_at
+           FROM events WHERE adw_id=? AND phase_id=? ORDER BY rowid`,
+      ).all(adwId, phase.phase_id);
+      const start = events.find((event) => event.type === "agent_start");
+      let payload: AgentStartPayload = {};
+      try { payload = JSON.parse(start?.payload_json ?? "{}") as AgentStartPayload; } catch { /* optional metadata */ }
+      const toolCount = events.filter((event) => event.type === "tool_call").length;
+      const startedAt = phase.started_at ?? start?.started_at ?? null;
+      const endedAt = phase.status === "running" ? null : phase.ended_at;
+      configured.push({
+        agent_id: phase.phase_id,
+        source: "configured",
+        adw_id: adwId,
+        phase_id: phase.phase_id,
+        parent_agent_id: null,
+        name: phase.owner ?? phase.name ?? "agent",
+        task: phase.description,
+        status: phase.status,
+        created_at: info?.created_at ?? startedAt,
+        started_at: startedAt,
+        ended_at: endedAt,
+        duration_ms: durationMs(startedAt, endedAt),
+        model: info?.model ?? payload.model ?? null,
+        thinking: payload.thinking ?? null,
+        turn_count: events.filter((event) => event.type === "agent_start").length,
+        tool_count: toolCount,
+        agent: phase.owner ?? phase.name ?? "agent",
+        coding_agent: info?.coding_agent ?? payload.coding_agent ?? null,
+        session_id: info?.session_id ?? payload.session_id ?? null,
+        color: info?.color ?? payload.color ?? null,
+        context_tokens: info?.context_tokens ?? null,
+        context_window: info?.context_window ?? null,
+        last_used_at: info?.last_used_at ?? endedAt,
+        phase_name: phase.name,
+        phase_seq: phase.seq,
+        phase_status: phase.status,
+        phase_attempt: phase.attempt,
+        phase_retries: phase.retries,
+      });
+    }
+
+    const children = this.storedSubagents(adwId).map((row): NestedAgent => ({
+      agent_id: row.subagent_id,
+      source: "nested",
+      adw_id: row.adw_id,
+      phase_id: row.phase_id,
+      parent_agent_id: configured.some((agent) => agent.agent_id === row.phase_id)
+        ? row.phase_id
+        : configured.filter((agent) => agent.agent === row.parent_agent).length === 1
+          ? configured.find((agent) => agent.agent === row.parent_agent)!.agent_id
+          : null,
+      name: `#${row.display_id ?? "?"} · ${row.subagent_id}`,
+      task: row.task,
+      status: row.status,
+      created_at: row.created_at,
+      started_at: row.started_at,
+      // A continuation can be running while the conversation still carries the prior end.
+      ended_at: row.status === "running" ? null : row.ended_at,
+      duration_ms: row.status === "running" ? null : row.duration_ms,
+      model: row.model,
+      thinking: row.thinking,
+      turn_count: row.turn_count,
+      tool_count: row.tool_count,
+      subagent_id: row.subagent_id,
+      display_id: row.display_id,
+      parent_agent: row.parent_agent,
+      parent_tool_call_id: row.parent_tool_call_id,
+      parent_event_id: row.parent_event_id,
+      session_path: row.session_path,
+      removed_at: row.removed_at,
+    }));
+
+    const childrenByParent = new Map<string | null, NestedAgent[]>();
+    for (const child of children) {
+      const list = childrenByParent.get(child.parent_agent_id) ?? [];
+      list.push(child);
+      childrenByParent.set(child.parent_agent_id, list);
+    }
+    const roster: TraceAgent[] = [];
+    for (const agent of configured) roster.push(agent, ...(childrenByParent.get(agent.agent_id) ?? []));
+    roster.push(...(childrenByParent.get(null) ?? []));
+    return roster;
+  }
+
+  /** Session + phases + unified agents in one shot — L2 needs all three to draw lanes. */
   sessionDetail(adwId: string): SessionDetail | null {
     const session = this.session(adwId);
     if (!session) return null;
@@ -405,7 +629,7 @@ export class SssfDb {
       session,
       usage: this.usage(adwId),
       phases: this.phases(adwId),
-      agents: this.agentSessions(adwId),
+      agents: this.traceAgents(adwId),
     };
   }
 
@@ -472,60 +696,92 @@ export class SssfDb {
     };
   }
 
-  /** Bounded child roster. Full results and tool payloads stay in detail endpoints. */
-  subagents(adwId: string): SubagentSummary[] {
+  /** Storage adapter for nested telemetry; it never escapes as a second API model. */
+  private storedSubagents(adwId: string): StoredSubagent[] {
     if (!this.hasTable("subagents") || !this.hasTable("subagent_turns")) return [];
-    return this.db
-      .query<SubagentSummary, [string]>(
-        `SELECT s.subagent_id,s.adw_id,s.phase_id,s.parent_agent,s.display_id,
-                s.parent_tool_call_id,s.parent_event_id,s.task,
-                (SELECT t.model FROM subagent_turns t WHERE t.subagent_id=s.subagent_id
-                  ORDER BY t.turn DESC LIMIT 1) AS model,
-                (SELECT t.thinking FROM subagent_turns t WHERE t.subagent_id=s.subagent_id
-                  ORDER BY t.turn DESC LIMIT 1) AS thinking,
-                s.session_path,s.status,s.created_at,s.started_at,s.ended_at,s.duration_ms,
-                s.removed_at,
-                (SELECT COUNT(*) FROM subagent_turns t WHERE t.subagent_id=s.subagent_id) AS turn_count,
-                (SELECT COALESCE(SUM(t.tool_count),0) FROM subagent_turns t
-                  WHERE t.subagent_id=s.subagent_id) AS tool_count
-           FROM subagents s WHERE s.adw_id=? ORDER BY s.created_at,s.rowid`,
-      )
-      .all(adwId);
+    return this.db.query<StoredSubagent, [string]>(
+      `SELECT s.subagent_id,s.adw_id,s.phase_id,s.parent_agent,s.display_id,
+              s.parent_tool_call_id,s.parent_event_id,s.task,
+              (SELECT t.model FROM subagent_turns t
+                WHERE t.adw_id=s.adw_id AND t.subagent_id=s.subagent_id
+                ORDER BY t.turn DESC LIMIT 1) AS model,
+              (SELECT t.thinking FROM subagent_turns t
+                WHERE t.adw_id=s.adw_id AND t.subagent_id=s.subagent_id
+                ORDER BY t.turn DESC LIMIT 1) AS thinking,
+              s.session_path,s.status,s.created_at,s.started_at,s.ended_at,s.duration_ms,
+              s.removed_at,
+              (SELECT COUNT(*) FROM subagent_turns t
+                WHERE t.adw_id=s.adw_id AND t.subagent_id=s.subagent_id) AS turn_count,
+              (SELECT COALESCE(SUM(t.tool_count),0) FROM subagent_turns t
+                WHERE t.adw_id=s.adw_id AND t.subagent_id=s.subagent_id) AS tool_count
+         FROM subagents s WHERE s.adw_id=? ORDER BY s.created_at,s.rowid`,
+    ).all(adwId);
   }
 
-  subagent(adwId: string, subagentId: string): SubagentDetail | null {
-    const summary = this.subagents(adwId).find((row) => row.subagent_id === subagentId);
+  agent(adwId: string, agentId: string): AgentDetail | null {
+    const summary = this.traceAgents(adwId).find((row) => row.agent_id === agentId);
     if (!summary) return null;
-    const turns = this.db
-      .query<SubagentTurn, [string, string]>(
-        `SELECT turn_id,subagent_id,turn,parent_tool_call_id,parent_event_id,prompt,model,
-                thinking,pid,status,started_at,ended_at,duration_ms,result,error,tool_count,
-                raw_output_path,session_path
-           FROM subagent_turns WHERE adw_id=? AND subagent_id=? ORDER BY turn`,
-      )
-      .all(adwId, subagentId);
+    if (summary.source === "configured") return { ...summary, turns: [] };
+    const turns = this.db.query<AgentTurn, [string, string]>(
+      `SELECT turn_id,subagent_id AS agent_id,turn,parent_tool_call_id,parent_event_id,prompt,model,
+              thinking,pid,status,started_at,ended_at,duration_ms,result,error,tool_count,
+              raw_output_path,session_path
+         FROM subagent_turns WHERE adw_id=? AND subagent_id=? ORDER BY turn`,
+    ).all(adwId, agentId);
     return { ...summary, turns };
   }
 
-  subagentActivities(
+  agentActivities(
     adwId: string,
-    subagentId: string,
+    agentId: string,
     after = 0,
     limit = DEFAULT_LIMIT,
-  ): SubagentActivitiesPage | null {
-    if (!this.subagent(adwId, subagentId)) return null;
-    if (!this.hasTable("subagent_activities")) {
-      return { activities: [], cursor: Math.max(0, after), has_more: false };
-    }
+  ): AgentActivitiesPage | null {
+    const summary = this.traceAgents(adwId).find((row) => row.agent_id === agentId);
+    if (!summary) return null;
     const cappedLimit = clamp(limit, 1, MAX_LIMIT);
-    const activities = this.db
-      .query<SubagentActivity, [string, string, number, number]>(
-        `SELECT id AS cursor,telemetry_id,activity_id,subagent_id,turn,tool_call_id,tool,
-                args_json,result_snippet,ok,started_at,ended_at,duration_ms
+    if (summary.source === "nested") {
+      if (!this.hasTable("subagent_activities")) {
+        return { activities: [], cursor: Math.max(0, after), has_more: false };
+      }
+      const activities = this.db.query<AgentActivity, [string, string, number, number]>(
+        `SELECT id AS cursor,telemetry_id,activity_id,subagent_id AS agent_id,turn,
+                tool_call_id,tool,args_json,result_snippet,ok,started_at,ended_at,duration_ms
            FROM subagent_activities WHERE adw_id=? AND subagent_id=? AND id>?
           ORDER BY id LIMIT ?`,
-      )
-      .all(adwId, subagentId, Math.max(0, after), cappedLimit);
+      ).all(adwId, agentId, Math.max(0, after), cappedLimit);
+      return {
+        activities,
+        cursor: activities.at(-1)?.cursor ?? Math.max(0, after),
+        has_more: activities.length === cappedLimit,
+      };
+    }
+
+    const events = this.db.query<Event, [string, string, number, number]>(
+      `SELECT rowid,event_id,adw_id,phase_id,parent_id,type,name,payload_json,tokens,started_at,ended_at
+         FROM events WHERE adw_id=? AND phase_id=? AND type='tool_call' AND rowid>?
+        ORDER BY rowid LIMIT ?`,
+    ).all(adwId, summary.phase_id, Math.max(0, after), cappedLimit);
+    const activities = events.map((event): AgentActivity => {
+      let payload: Record<string, unknown> = {};
+      try { payload = JSON.parse(event.payload_json ?? "{}") as Record<string, unknown>; } catch { /* raw legacy call */ }
+      const args = payload.args;
+      return {
+        cursor: event.rowid,
+        telemetry_id: event.event_id,
+        activity_id: event.event_id,
+        agent_id: summary.agent_id,
+        turn: null,
+        tool_call_id: typeof payload.tool_call_id === "string" ? payload.tool_call_id : null,
+        tool: typeof payload.tool === "string" ? payload.tool : event.name,
+        args_json: args === undefined ? null : JSON.stringify(args),
+        result_snippet: typeof payload.result_snippet === "string" ? payload.result_snippet : null,
+        ok: typeof payload.ok === "boolean" ? Number(payload.ok) : null,
+        started_at: event.started_at,
+        ended_at: event.ended_at,
+        duration_ms: typeof payload.duration_ms === "number" ? payload.duration_ms : durationMs(event.started_at, event.ended_at),
+      };
+    });
     return {
       activities,
       cursor: activities.at(-1)?.cursor ?? Math.max(0, after),
@@ -560,6 +816,12 @@ export class SssfDb {
       .get();
     return row?.n ?? 0;
   }
+}
+
+function durationMs(startedAt: string | null, endedAt: string | null): number | null {
+  const start = Date.parse(startedAt ?? "");
+  const end = Date.parse(endedAt ?? "");
+  return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : null;
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -1,9 +1,9 @@
 import { ref } from 'vue'
 
-// Hash routes: #/ → sessions · #/<adw_id> → waterfall · #/<adw_id>/<phase_id> → phase panel open
+// Hash routes: #/ → sessions · #/<adw_id> → waterfall · #/<adw_id>/<agent_id> → unified detail panel
 export interface Route {
   adwId: string | null
-  phaseId: string | null
+  agentId: string | null
 }
 
 function parse(): Route {
@@ -12,7 +12,7 @@ function parse(): Route {
     .split('/')
     .filter(Boolean)
     .map(decodeURIComponent)
-  return { adwId: parts[0] ?? null, phaseId: parts[1] ?? null }
+  return { adwId: parts[0] ?? null, agentId: parts[1] ?? null }
 }
 
 const route = ref<Route>(parse())
@@ -25,17 +25,16 @@ export function useRoute() {
   return route
 }
 
-// Display name for the phase crumb — set by the trace view once phases load,
-// since the phase_id in the URL is not the display name.
-export const phaseCrumb = ref<string | null>(null)
+// Display name for the selected agent/phase crumb, resolved after the trace loads.
+export const agentCrumb = ref<string | null>(null)
 
-export function hrefFor(adwId?: string | null, phaseId?: string | null): string {
+export function hrefFor(adwId?: string | null, agentId?: string | null): string {
   let h = '#/'
   if (adwId) h += encodeURIComponent(adwId)
-  if (adwId && phaseId) h += `/${encodeURIComponent(phaseId)}`
+  if (adwId && agentId) h += `/${encodeURIComponent(agentId)}`
   return h
 }
 
-export function navigate(adwId?: string | null, phaseId?: string | null): void {
-  window.location.hash = hrefFor(adwId, phaseId)
+export function navigate(adwId?: string | null, agentId?: string | null): void {
+  window.location.hash = hrefFor(adwId, agentId)
 }

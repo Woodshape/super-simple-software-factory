@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useRoute, hrefFor, phaseCrumb } from './lib/router'
+import { useRoute, hrefFor, agentCrumb } from './lib/router'
 import SessionsList from './components/SessionsList.vue'
 import SessionTrace from './components/SessionTrace.vue'
 
@@ -22,20 +22,20 @@ const route = useRoute()
         <a :href="hrefFor()" :class="{ current: !route.adwId }">sessions</a>
         <template v-if="route.adwId">
           <span class="sep">›</span>
-          <a :href="hrefFor(route.adwId)" :class="{ current: !route.phaseId }">{{
+          <a :href="hrefFor(route.adwId)" :class="{ current: !route.agentId }">{{
             route.adwId
           }}</a>
         </template>
-        <template v-if="route.adwId && route.phaseId">
+        <template v-if="route.adwId && route.agentId">
           <span class="sep">›</span>
-          <span class="current">{{ phaseCrumb ?? route.phaseId }}</span>
+          <span class="current">{{ agentCrumb ?? route.agentId }}</span>
         </template>
       </nav>
       <span class="live-hint"><span class="live-dot" /> live</span>
     </header>
     <main>
       <SessionsList v-if="!route.adwId" />
-      <SessionTrace v-else :key="route.adwId" :adw-id="route.adwId" :phase-id="route.phaseId" />
+      <SessionTrace v-else :key="route.adwId" :adw-id="route.adwId" :agent-id="route.agentId" />
     </main>
   </div>
 </template>

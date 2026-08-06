@@ -6,12 +6,12 @@ import type {
   HealthResponse,
   PromptsResponse,
   SessionDetail,
+  DeleteSessionResponse,
   SessionSummary,
-  SubagentActivitiesPage,
-  SubagentDetail,
-  SubagentSummary,
+  AgentActivitiesPage,
+  AgentDetail,
 } from './types'
-import { normalizeSubagentDetail, normalizeSubagents } from './subagents'
+import { normalizeActivities, normalizeAgentDetail, normalizeAgents } from './agents'
 
 async function getJson(url: string): Promise<unknown> {
   const res = await fetch(url)
@@ -47,7 +47,7 @@ export async function fetchSession(adwId: string): Promise<SessionDetail> {
     session: detail.session,
     usage: detail.usage ?? { read: 0, written: 0 },
     phases: detail.phases ?? [],
-    agents: detail.agents ?? [],
+    agents: normalizeAgents(detail.agents),
   }
 }
 
@@ -60,6 +60,23 @@ export async function fetchEvents(adwId: string, after: number, limit = 500): Pr
     return { events: page, cursor, has_more: page.length === limit }
   }
   return { events: page.events ?? [], cursor: page.cursor ?? after, has_more: page.has_more ?? false }
+}
+
+/** Permanently delete an archived run and its raw session files. */
+export async function deleteSession(adwId: string): Promise<DeleteSessionResponse> {
+  const url = `/api/sessions/${encodeURIComponent(adwId)}`
+  const res = await fetch(url, { method: 'DELETE' })
+  if (!res.ok) {
+    let message = `DELETE ${url} → ${res.status}`
+    try {
+      const payload = (await res.json()) as { error?: unknown }
+      if (typeof payload.error === 'string') message = payload.error
+    } catch {
+      // Preserve the status fallback when the server did not return JSON.
+    }
+    throw new Error(message)
+  }
+  return (await res.json()) as DeleteSessionResponse
 }
 
 /** Archive a run out of the review list (or restore it with archived=false). */
@@ -77,7 +94,7 @@ export function fetchHealth(): Promise<HealthResponse> {
   return getJson('/api/health') as Promise<HealthResponse>
 }
 
-// PhaseDetail imports the prompts type from here alongside fetchPrompts.
+// Configured agent detail imports the prompts type alongside fetchPrompts.
 export type { PromptsResponse }
 
 export async function fetchPrompts(adwId: string, agent: string): Promise<PromptsResponse> {
@@ -99,29 +116,24 @@ export function fetchGates(adwId: string): Promise<GateResult[]> {
   return getJson(`/api/sessions/${encodeURIComponent(adwId)}/gates`) as Promise<GateResult[]>
 }
 
-export async function fetchSubagents(adwId: string): Promise<SubagentSummary[]> {
-  const data = await getJson(`/api/sessions/${encodeURIComponent(adwId)}/subagents`)
-  return normalizeSubagents(data)
-}
-
-export async function fetchSubagent(adwId: string, childId: string): Promise<SubagentDetail> {
+export async function fetchAgent(adwId: string, agentId: string): Promise<AgentDetail> {
   const data = await getJson(
-    `/api/sessions/${encodeURIComponent(adwId)}/subagents/${encodeURIComponent(childId)}`,
+    `/api/sessions/${encodeURIComponent(adwId)}/agents/${encodeURIComponent(agentId)}`,
   )
-  return normalizeSubagentDetail(data)
+  return normalizeAgentDetail(data)
 }
 
-export async function fetchSubagentActivity(
+export async function fetchAgentActivity(
   adwId: string,
-  childId: string,
+  agentId: string,
   after: number,
   limit = 200,
-): Promise<SubagentActivitiesPage> {
+): Promise<AgentActivitiesPage> {
   const data = (await getJson(
-    `/api/sessions/${encodeURIComponent(adwId)}/subagents/${encodeURIComponent(childId)}/activity?after=${after}&limit=${limit}`,
-  )) as SubagentActivitiesPage
+    `/api/sessions/${encodeURIComponent(adwId)}/agents/${encodeURIComponent(agentId)}/activity?after=${after}&limit=${limit}`,
+  )) as AgentActivitiesPage
   return {
-    activities: Array.isArray(data.activities) ? data.activities : [],
+    activities: normalizeActivities(data.activities, agentId),
     cursor: typeof data.cursor === 'number' ? data.cursor : after,
     has_more: data.has_more === true,
   }

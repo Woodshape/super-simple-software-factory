@@ -22,15 +22,15 @@ import {
   SlidersHorizontal,
   SquareTerminal,
 } from 'lucide-vue-next'
-import { fmtClock, payloadOk, ts } from '../lib/format'
-import { highlightJson, highlightJsonText } from '../lib/highlight'
+import { fmtClock, ts } from '../lib/format'
+import { highlightJson } from '../lib/highlight'
 import { eventLabel, parseAgentStart, parseToolCall } from '../lib/events'
 import { modelIcon, modelName } from '../lib/models'
 import { fetchPrompts, type PromptsResponse } from '../lib/api'
 import { renderMarkdown } from '../lib/markdown'
-import StatusChip from './StatusChip.vue'
 import StatChip from './StatChip.vue'
 import DetailSection from './DetailSection.vue'
+import ToolCallRow from './ToolCallRow.vue'
 
 const props = defineProps<{
   phase: Phase
@@ -38,8 +38,6 @@ const props = defineProps<{
   envelopes: Envelope[]
   gates: GateResult[]
 }>()
-
-defineEmits<{ close: [] }>()
 
 const phaseEvents = computed(() =>
   props.events.filter((e) => e.phase_id === props.phase.phase_id).sort((a, b) => a.rowid - b.rowid),
@@ -150,13 +148,6 @@ const requestText = computed(() => {
   return null
 })
 
-const phaseDurationMs = computed(() => {
-  const start = ts(props.phase.started_at)
-  if (!Number.isFinite(start)) return NaN
-  const end = props.phase.status === 'running' ? Date.now() : ts(props.phase.ended_at)
-  return Number.isFinite(end) ? end - start : NaN
-})
-
 function violations(g: GateResult): string[] {
   try {
     const v: unknown = JSON.parse(g.violations_json ?? '[]')
@@ -226,9 +217,9 @@ function richCall(e: EventRow): ToolCallPayload | null {
   return e.type === 'tool_call' ? parseToolCall(e) : null
 }
 
-// Safe for v-html: highlightJsonText/highlightJson escape all input.
-function argsHtml(call: ToolCallPayload | null): string {
-  return highlightJsonText(JSON.stringify(call?.args ?? {}, null, 2))
+function toolArgs(e: EventRow): string | null {
+  const call = richCall(e)
+  return call ? JSON.stringify(call.args ?? {}, null, 2) : null
 }
 
 // ── Collapsible sections ─────────────────────────────────────────────────────
@@ -339,35 +330,7 @@ function togglePanel(id: string) {
 </script>
 
 <template>
-  <section class="detail">
-    <header class="d-head">
-      <div class="d-main">
-        <span class="d-name">{{ phase.name }}</span>
-        <StatusChip :status="phase.status ?? 'queued'" />
-        <StatChip
-          v-if="Number.isFinite(phaseDurationMs)"
-          kind="runtime"
-          :value="phaseDurationMs"
-        />
-      </div>
-      <div class="d-tags">
-        <span class="tag">
-          <span class="tag-k">owner</span>
-          <span class="tag-v">{{ phase.owner ?? '—' }}</span>
-        </span>
-        <span class="tag">
-          <span class="tag-k">kind</span>
-          <span class="tag-v">{{ phase.kind ?? '—' }}</span>
-        </span>
-        <span class="tag">
-          <span class="tag-k">attempt</span>
-          <span class="tag-v">{{ phase.attempt ?? 0 }}/{{ phase.retries ?? 0 }}</span>
-        </span>
-      </div>
-      <button class="close" title="close" @click="$emit('close')">✕</button>
-    </header>
-
-    <div v-if="phase.error" class="error-bar d-error">{{ phase.error }}</div>
+  <div v-if="phase.error" class="error-bar d-error">{{ phase.error }}</div>
 
     <div class="d-grid">
       <div class="d-col">
@@ -616,101 +579,42 @@ function togglePanel(id: string) {
       <div class="d-col">
         <h3><Activity class="h3-icon" :size="19" :stroke-width="2" /> events ({{ phaseEvents.length }})</h3>
         <div v-if="!phaseEvents.length" class="faint">no events</div>
-        <div v-for="e in phaseEvents" :key="e.event_id" class="event">
-          <button class="event-row" :class="{ open: expanded.has(e.event_id) }" @click="toggle(e)">
-            <span class="e-time dim">{{ fmtClock(e.started_at) }}</span>
-            <span class="e-type" :class="typeClass[e.type ?? '']">{{ e.type }}</span>
-            <span
-              class="e-name"
-              :class="{ 't-red': e.type === 'tool_call' && !payloadOk(e.payload_json) }"
-              :title="eventLabel(e)"
-              >{{ eventLabel(e) }}</span
-            >
-            <span class="e-extra">
-              <StatChip
-                v-if="Number.isFinite(eventDurationMs(e))"
-                kind="runtime"
-                compact
-                :value="eventDurationMs(e)"
-              />
-              <StatChip v-if="e.tokens" kind="tokens" compact :value="e.tokens" />
-            </span>
-          </button>
-
-          <div v-if="expanded.has(e.event_id)" class="payload-panel">
-            <template v-if="richCall(e)">
-              <div class="p-meta">
-                <span class="p-tool">{{ richCall(e)?.tool }}</span>
-                <span v-if="richCall(e)?.ok === false" class="t-red">failed</span>
-                <StatChip
-                  v-if="richCall(e)?.duration_ms != null"
-                  kind="runtime"
-                  compact
-                  :value="richCall(e)?.duration_ms"
-                />
-              </div>
-              <h4>args</h4>
-              <pre class="p-pre" v-html="argsHtml(richCall(e))" />
-              <template v-if="richCall(e)?.result_snippet">
-                <h4>result</h4>
-                <pre class="p-pre">{{ richCall(e)?.result_snippet }}</pre>
+        <template v-for="e in phaseEvents" :key="e.event_id">
+          <ToolCallRow
+            v-if="e.type === 'tool_call'"
+            :time="e.started_at"
+            :tool="richCall(e)?.tool ?? e.name"
+            :ok="richCall(e)?.ok ?? null"
+            :duration-ms="Number.isFinite(eventDurationMs(e)) ? eventDurationMs(e) : null"
+            :tokens="e.tokens"
+            :args-json="toolArgs(e)"
+            :result="richCall(e)?.result_snippet ?? null"
+            :legacy-payload="richCall(e) ? null : (e.payload_json ?? 'null')"
+          />
+          <div v-else class="event">
+            <button class="event-row" :class="{ open: expanded.has(e.event_id) }" @click="toggle(e)">
+              <span class="e-time dim">{{ fmtClock(e.started_at) }}</span>
+              <span class="e-type" :class="typeClass[e.type ?? '']">{{ e.type }}</span>
+              <span class="e-name" :title="eventLabel(e)">{{ eventLabel(e) }}</span>
+              <span class="e-extra">
+                <StatChip v-if="Number.isFinite(eventDurationMs(e))" kind="runtime" compact :value="eventDurationMs(e)" />
+                <StatChip v-if="e.tokens" kind="tokens" compact :value="e.tokens" />
+              </span>
+            </button>
+            <div v-if="expanded.has(e.event_id)" class="payload-panel">
+              <template v-if="e.payload_json">
+                <h4>payload</h4>
+                <pre class="p-pre" v-html="highlightJson(e.payload_json)" />
               </template>
-            </template>
-            <template v-else-if="e.type === 'tool_call' && e.payload_json">
-              <div class="faint">no detail available — legacy event payload</div>
-              <pre class="p-pre" v-html="highlightJson(e.payload_json)" />
-            </template>
-            <template v-else-if="e.payload_json">
-              <h4>payload</h4>
-              <pre class="p-pre" v-html="highlightJson(e.payload_json)" />
-            </template>
-            <div v-else class="faint">no payload</div>
+              <div v-else class="faint">no payload</div>
+            </div>
           </div>
-        </div>
+        </template>
       </div>
     </div>
-  </section>
 </template>
 
 <style scoped>
-.detail {
-  margin: 0 28px 28px;
-  border: 1px solid var(--border-soft);
-  border-radius: 16px;
-  background: var(--surface);
-}
-
-.d-head {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  flex-wrap: wrap;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel-2);
-  border-radius: 10px 10px 0 0;
-}
-
-.d-main {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-.d-name {
-  font-size: 20px;
-  font-weight: 700;
-}
-
-.d-tags {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-left: auto;
-}
-
 .tag {
   display: inline-flex;
   align-items: baseline;
@@ -729,22 +633,6 @@ function togglePanel(id: string) {
 
 .tag-v {
   color: var(--text);
-}
-
-.close {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--dim);
-  font-family: var(--mono);
-  font-size: 16px;
-  cursor: pointer;
-  padding: 3px 10px;
-}
-
-.close:hover {
-  color: var(--text);
-  border-color: var(--dim);
 }
 
 .d-desc {
@@ -1204,19 +1092,6 @@ h3:first-child {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel-3);
-}
-
-.p-meta {
-  display: flex;
-  gap: 16px;
-  align-items: baseline;
-  margin-bottom: 10px;
-}
-
-.p-tool {
-  color: var(--cyan);
-  font-weight: 700;
-  font-size: 17px;
 }
 
 .payload-panel h4 {
