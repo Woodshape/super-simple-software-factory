@@ -128,7 +128,7 @@ Everything lives in `.claude/skills/sssf/`. `SKILL.md` carries the hard rules an
 | What lands in your repo | Where it comes from | Tracked |
 |---|---|---|
 | `adws/adw_sssf_config/sssf.config.yaml` | `templates/sssf.config.yaml` | yes, it is your agent roster |
-| `adws/adw_*.py` | `templates/adws/` | yes, twelve starter workflows |
+| `adws/adw_*.py` | `templates/adws/` | yes, thirteen starter workflows |
 | `adws/adw_modules/` | `templates/adws/adw_modules/` | yes, all low-level logic |
 | `adws/adw_data/prompt_engineering/` | `templates/prompt_engineering/` | yes, **your prompts live here** |
 | `adws/adw_data/harness_engineering/` | `templates/harness_engineering/` | yes, pi extensions |
@@ -295,7 +295,7 @@ super-simple-software-factory/          # the deployable factory, and nothing el
         ├── prompt_engineering/{agent}/ # system.md + user.md per agent
         ├── harness_engineering/        # pi extensions
         └── adws/
-            ├── adw_*.py                # the twelve starter workflows
+            ├── adw_*.py                # the thirteen starter workflows
             └── adw_modules/            # ALL low-level logic, ADW scripts stay thin
 ```
 
@@ -303,7 +303,7 @@ The skill is also what an agent reads to *operate* the factory. `SKILL.md` is th
 
 ---
 
-## The twelve starter workflows
+## The thirteen starter workflows
 
 Every ADW takes the same shape:
 
@@ -315,6 +315,7 @@ uv run adws/adw_*.py "<prompt or path/to/prompt.md>" [--config adws/adw_sssf_con
 |---|---|---|
 | `adw_prompt` | engineer to \<agent\> | one agent, one prompt, `--agent NAME` picks who |
 | `adw_scout` | engineer to scout | read-only recon, nothing changes |
+| `adw_scout_plan` | engineer to scout to planner | repository-informed plan, no implementation |
 | `adw_plan` | engineer to planner | you want the spec before any code |
 | `adw_build` | engineer to builder | the plan already exists |
 | `adw_quality` | engineer to code(quality) | lint, typecheck, build, no agents at all |
@@ -327,6 +328,8 @@ uv run adws/adw_*.py "<prompt or path/to/prompt.md>" [--config adws/adw_sssf_con
 | `adw_simple_sdlc` | plan, build, test, review, document | the work is real and its shape is not obvious |
 
 `adw_simple_sdlc` lands three commits from three authors. The plan, the code, and the write-up each get their own, and each message is the words of the agent that produced it.
+
+Every durable `specs/*.md` plan begins with `status: planned`, `in_progress`, or `complete`. Run `just specs` for the deterministic inventory, or make one explicit legal transition with `just specs transition STATUS PATH [MIRROR ...]`. Malformed legacy files are reported as `ERROR`, never assigned a guessed state. Planner/build workflows write transitions in visible code phases; for standalone build workflows the engineer transitions an explicit path. Session or envelope success never changes spec lifecycle by implication.
 
 `--adw-id` is optional everywhere. Omit it and a fresh id is minted and printed. Supply it and the run joins that session: same dirs, same `context_handoff/`, and each agent **resumes its existing context window** through `agent_map.json` instead of starting cold. That is how you chain workflows.
 

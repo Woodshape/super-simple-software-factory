@@ -128,6 +128,22 @@ Respond with ONLY valid JSON matching `ScoutOutput` — no prose before or after
 
 The `## Report` section shows the exact JSON shape of the declared output type — that is the agent's output contract, and it lives in `user.md` because the shape belongs to the *use*, not the identity. The matching `system.md` stays static: Purpose + Instructions only.
 
+## Durable spec lifecycle
+
+A planner writes two byte-identical copies of one plan: the tracked `specs/<adw_id>_<slug>.md` is authoritative, and `context_handoff/plan.md` is its live mirror while that session exists. Both begin with exactly one canonical frontmatter mapping and no other metadata:
+
+```yaml
+---
+status: planned
+---
+```
+
+The closed v1 enum is `planned` (a valid plan exists), `in_progress` (implementation explicitly started, including failed or interrupted attempts), and `complete` (declared acceptance evidence passed or an engineer accepted equivalent evidence). The only legal edges are `planned -> in_progress -> complete`; direct skips, repeats, backward moves, and writes from `complete` are errors. Missing, duplicate, malformed, non-scalar, extra, or unknown metadata is also an error—there is no inferred `unknown` state.
+
+Creation is planner-owned and remains `planned` in plan-only workflows such as `adw_plan` and `adw_scout_plan`. Plan/build ADWs transition the authoritative and live copies together in visible `kind="code"`, `owner="specs"` phases immediately before building, and only explicit green acceptance branches write `complete`. A standalone build has no `PlanOutput` to resolve safely, so an engineer uses `just specs transition <status> <authoritative-path> [mirror-path ...]` with explicit paths; code never guesses from an `adw_id`.
+
+Spec lifecycle is independent of `EnvelopeBase.status`, phase/session status, `run.finish()`, Git commits, and reviewer `approved`. Those report operational outcomes or one acceptance input; none silently rewrites the durable delivery verdict.
+
 ## Session directory layout
 
 ```

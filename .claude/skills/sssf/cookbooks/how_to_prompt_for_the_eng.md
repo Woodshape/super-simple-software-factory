@@ -71,6 +71,7 @@ Chains are the engineer's to add, rename, and rewire, so **the files on disk are
 |---|---|
 | Changes code, and the shape is not obvious — new behaviour, more than one file, anything you would want a plan for | goes end to end: plans, builds, verifies, reviews, and documents |
 | Changes code, one well-understood edit | plans, builds, and verifies |
+| Needs repository recon before a plan, but no code | scouts, then passes its findings directly to a planner |
 | Implements a plan this session already produced (`--adw-id`) | starts at build and verifies |
 | Confirms built work is what was asked for | ends in a review phase |
 | Writes up work already shipped | captures the diff and documents it |

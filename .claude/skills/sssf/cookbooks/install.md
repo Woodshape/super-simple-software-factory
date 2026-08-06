@@ -18,11 +18,11 @@ Run from the **target repo root** — the cwd is where everything lands. If the 
 |---|---|---|
 | `adws/adw_sssf_config/sssf.config.yaml` | `templates/sssf.config.yaml` | yes — the agent roster |
 | `.env.sample` | `templates/env.sample` | yes |
-| `adws/adw_*.py` | `templates/adws/` | yes — the twelve starter ADWs |
+| `adws/adw_*.py` | `templates/adws/` | yes — the thirteen starter ADWs, including scout-to-plan |
 | `adws/adw_modules/` | `templates/adws/adw_modules/` | yes — all low-level logic |
 | `adws/adw_data/prompt_engineering/{planner,builder,scout,reviewer,documenter}/` | `templates/prompt_engineering/` | yes — **the user-owned home for prompts** |
 | `adws/adw_data/harness_engineering/` | `templates/harness_engineering/` | yes — **the user-owned home for pi extensions** |
-| `justfile` | `templates/justfile` | yes — starter recipes: `just demo`, the workflows, the trace reads, lifecycle-managed `just obs` |
+| `justfile` | `templates/justfile` | yes — starter recipes: `just demo`, workflows, `just specs`, trace reads, lifecycle-managed `just obs` |
 | `adws/adw_data/sessions/` (including nested child sessions/raw results), `adws/adw_data/sssf.db` | created at runtime | no — gitignored |
 
 The two `*_engineering` dirs mirror the two config keys of the same name: `prompt_engineering` is what an agent is told, `harness_engineering` is what its harness can do. Both are yours the moment they are stamped. Edit them in `adws/adw_data/`, never back inside the skill.
@@ -31,9 +31,9 @@ The two `*_engineering` dirs mirror the two config keys of the same name: `promp
 
 ## Idempotency
 
-Nested-subagent observability is distributable template behavior; an existing installation must be refreshed with `install.py --force` to receive its extension, tracer, schema, and UI contract changes.
+Re-running is safe. `install.py` skips **every** file that already exists — including the lifecycle-managed `just obs` recipe in the stamped justfile — and reports what it skipped, while still stamping newly added templates whose destination is absent. That is how an existing install picks up the thirteenth workflow, `adw_scout_plan.py`, without overwriting its other ADWs.
 
-Re-running is safe. `install.py` skips **every** file that already exists — including the lifecycle-managed `just obs` recipe in the stamped justfile — and reports what it skipped, so a second run doubles as a drift check. To refresh stamped code (`adw_modules/`, the starter `adw_*.py`) to the skill's current version, run with `--force` — but know that `--force` overwrites ALL existing stamped files, including `sssf.config.yaml` and `prompt_engineering/`, so commit or back up user-owned edits first.
+Nested-subagent observability changes existing extension, tracer, schema, and UI contract files, so an existing installation must use `install.py --force` to receive that behavior. `--force` refreshes stamped code (`adw_modules/`, the starter `adw_*.py`) but overwrites **all** existing stamped files, including `sssf.config.yaml`, `prompt_engineering/`, and `justfile`; commit or back up user-owned edits first.
 
 ## Post-install checklist
 

@@ -44,6 +44,10 @@ prompt *ARGS:
 scout *ARGS:
     uv run adws/adw_scout.py --config {{config}} "$@"
 
+# scout then plan, without implementing: just scout-plan "map auth before planning"
+scout-plan *ARGS:
+    uv run adws/adw_scout_plan.py --config {{config}} "$@"
+
 # plan only: just plan "add a /health endpoint"
 plan *ARGS:
     uv run adws/adw_plan.py --config {{config}} "$@"
@@ -59,6 +63,10 @@ sdlc *ARGS:
 # the full chain, plus review and docs: just simple-sdlc "add a /health endpoint"
 simple-sdlc *ARGS:
     uv run adws/adw_simple_sdlc.py --config {{config}} "$@"
+
+# list durable specs, or make an explicit legal transition: just specs [transition STATUS PATH ...]
+specs *ARGS:
+    uv run adws/adw_modules/specs.py "$@"
 
 # ── watch it ────────────────────────────────────────────────────────────────
 # Reads never block a running workflow, the db is WAL. Poll as hard as you like.

@@ -14,6 +14,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from . import specs
 from .data_types import EnvelopeBase, GateReport
 
 TAIL_CHARS = 1000        # command output kept as evidence on a failure
@@ -41,6 +42,43 @@ def files_non_empty(envelope: EnvelopeBase, run) -> GateReport:
             continue                       # existence is artifacts_exist's job
         empty = p.stat().st_size == 0
         report.check(a, not empty, "declared artifact is empty" if empty else _size(p))
+    return report
+
+
+def plan_spec_valid(envelope: EnvelopeBase, run) -> GateReport:
+    """Verify the planner's two planned, safe, byte-identical spec artifacts."""
+    report = GateReport()
+    artifact_count_ok = len(envelope.artifacts) == 2
+    report.check("plan artifacts", artifact_count_ok,
+                 "exactly 2 artifacts declared" if artifact_count_ok
+                 else f"expected exactly 2 artifacts, found {len(envelope.artifacts)}")
+
+    try:
+        artifacts = specs.resolve_plan_artifacts(envelope, run)
+        report.check("plan artifact paths", True,
+                     "one handoff plan and one direct adw-prefixed durable spec")
+    except (specs.SpecMetadataError, OSError) as error:
+        report.check("plan artifact paths", False, str(error))
+        return report
+
+    contents: dict[Path, bytes] = {}
+    for label, path in (("durable spec metadata", artifacts.authoritative),
+                        ("handoff plan metadata", artifacts.mirror)):
+        try:
+            contents[path] = path.read_bytes()
+            document = specs.parse_bytes(contents[path], str(path))
+            report.check(label, document.status == "planned",
+                         "status is planned" if document.status == "planned"
+                         else f"planner-created artifact has status {document.status}, expected planned")
+        except (OSError, specs.SpecMetadataError) as error:
+            report.check(label, False, str(error))
+
+    both_read = len(contents) == 2
+    identical = both_read and contents[artifacts.authoritative] == contents[artifacts.mirror]
+    report.check("plan copies identical", identical,
+                 "byte-identical" if identical else
+                 "could not read both plan copies" if not both_read else
+                 "durable spec and handoff plan differ")
     return report
 
 

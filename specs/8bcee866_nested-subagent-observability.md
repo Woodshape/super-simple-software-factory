@@ -1,3 +1,7 @@
+---
+status: complete
+---
+
 # Plan: end-to-end nested Pi subagent observability
 
 ## Source of truth and scope

@@ -7,11 +7,11 @@
 Usage:
     uv run adws/adw_simple_sdlc.py "<prompt or path/to/prompt.md>" [--config adws/adw_sssf_config/sssf.config.yaml] [--adw-id a1b2c3d4]
 
-Phases: engineer(request) -> planner -> git(commit_plan)
+Phases: engineer(request) -> planner -> git(commit_plan) -> code(spec_start)
         -> builder -> code(test) [-> builder(fix) -> code(test) ... bounded]
         -> reviewer [-> builder(revise) -> reviewer ... bounded]
         -> code(retest, only if a revision changed code)
-        -> git(commit_build) -> code(changes) -> documenter -> git(commit_docs)
+        -> code(spec_complete) -> git(commit_build) -> code(changes) -> documenter -> git(commit_docs)
 
 Three commits, three work products, three authors. The plan, the code, and the
 write-up each land in their own commit, and each commit message is the words of
@@ -44,7 +44,7 @@ pinned before the first commit phase and printed in the request phase.
 import argparse
 import sys
 
-from adw_modules import agents, changes, gates, git_helper, quality, session, utils
+from adw_modules import agents, changes, gates, git_helper, quality, session, specs, utils
 from adw_modules.data_types import (AgentCall, BuildOutput, ChangeCapture,
                                     DocumentOutput, PhaseParams, PlanOutput,
                                     ReviewOutput)
@@ -82,11 +82,17 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
     with run.phase(PhaseParams(name="plan", kind="agent", owner="planner",
                                description="Turn the request into an implementable plan")) as ph:
         plan = ph.call(AgentCall(output_type=PlanOutput, prompt=prompt,
-                                 gates=[gates.artifacts_exist, gates.files_non_empty]))
+                                 gates=[gates.artifacts_exist, gates.files_non_empty,
+                                        gates.plan_spec_valid]))
 
     with run.phase(PhaseParams(name="commit_plan", kind="code", owner="git",
                                description="Put the spec on record before any code exists to blur it")) as ph:
         commit(ph, plan)
+
+    with run.phase(PhaseParams(name="spec_start", kind="code", owner="specs",
+                               description="Mark the committed plan in progress before implementation starts")) as ph:
+        artifacts = specs.transition_plan(plan, run, "in_progress")
+        ph.log(spec=str(artifacts.authoritative), status="in_progress")
 
     with run.phase(PhaseParams(name="build", kind="agent", owner="builder",
                                description="Implement the plan exactly")) as ph:
@@ -143,6 +149,11 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
     verified = (test is not None and test.passed
                 and review is not None and review.approved)
     if verified:
+        with run.phase(PhaseParams(name="spec_complete", kind="code", owner="specs",
+                                   description="Accept the implementation after green tests and approved review")) as ph:
+            artifacts = specs.transition_plan(plan, run, "complete")
+            ph.log(spec=str(artifacts.authoritative), status="complete")
+
         with run.phase(PhaseParams(name="commit_build", kind="code", owner="git",
                                    description="Land the code only now: green suite, approved review")) as ph:
             commit(ph, build)

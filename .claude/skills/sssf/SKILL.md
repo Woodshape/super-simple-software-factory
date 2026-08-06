@@ -20,6 +20,7 @@ Three steps. Then stop.
 | ADW | Chain | Use when |
 |---|---|---|
 | adw_scout | engineer → scout | read-only recon; nothing changes |
+| adw_scout_plan | engineer → scout → planner | repository-informed plan; no implementation |
 | adw_simple_sdlc | plan → build → test → review → document, 3 commits | the work is real and its shape is not obvious |
 ```
 
@@ -70,6 +71,7 @@ Deep specs, when needed: [references/config.md](references/config.md) · [refere
 8. **A known command is code, not an agent** — if you can write the invocation down (`bun test`, `ruff check`), it belongs in a `kind="code"` phase via `adw_modules/quality.py`. Agents are for the parts that need reading and deciding; failures come back to the builder as an envelope either way.
 9. **`tools:` is a capability list, `writes:` is the boundary** — `bash` runs anything (including `git checkout`) and `write` reaches any path, so a tool list can never make "this agent changes nothing" true. `writes:` per agent and `protected_files` in defaults are enforced in `adw_modules/permissions.py` after every agent call: unauthorized changes are rolled back and the phase dies. The session runtime under `data_dir` is always writable — a read-only agent is read-only with respect to the REPO, never mute.
 10. **Every ADW ends in `run.finish()`** — phases passing is not the same as the run being accepted. A test phase that ran a red suite succeeded at its job. Pass `accepted=` so the exit code, the session status, and the banner are decided together and cannot disagree.
+11. **Spec lifecycle is explicit** — `just specs` lists only validated `planned`, `in_progress`, or `complete` metadata; malformed legacy files are errors. Visible code phases or an engineer's explicit transition write the next legal state. Envelope, phase, and session status never imply it.
 
 ## v1 scope
 
