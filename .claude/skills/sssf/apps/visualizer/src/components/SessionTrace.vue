@@ -10,9 +10,20 @@ import type {
   PhaseKind,
   Session,
   SessionUsage,
+  SubagentActivity,
+  SubagentDetail,
+  SubagentSummary,
 } from '../lib/types'
 import { Bot, SquareTerminal, UserRound } from 'lucide-vue-next'
-import { fetchEnvelopes, fetchEvents, fetchGates, fetchSession } from '../lib/api'
+import {
+  fetchEnvelopes,
+  fetchEvents,
+  fetchGates,
+  fetchSession,
+  fetchSubagent,
+  fetchSubagentActivity,
+  fetchSubagents,
+} from '../lib/api'
 import { axisTicks, fmtDate, payloadOk, ts } from '../lib/format'
 import { modelIcon, modelName } from '../lib/models'
 import { agentColor, hexAlpha, parseAgentStart } from '../lib/events'
@@ -20,6 +31,8 @@ import { navigate, phaseCrumb } from '../lib/router'
 import StatusChip from './StatusChip.vue'
 import StatChip from './StatChip.vue'
 import PhaseDetail from './PhaseDetail.vue'
+import SubagentInspector from './SubagentInspector.vue'
+import { mergeActivities } from '../lib/subagents'
 
 const props = defineProps<{ adwId: string; phaseId: string | null }>()
 
@@ -33,8 +46,13 @@ const gates = ref<GateResult[]>([])
 const apiError = ref<string | null>(null)
 const loaded = ref(false)
 const nowMs = ref(Date.now())
+const subagents = ref<SubagentSummary[]>([])
+const selectedSubagentId = ref<string | null>(null)
+const subagentDetail = ref<SubagentDetail | null>(null)
+const subagentActivities = ref<SubagentActivity[]>([])
 
 let cursor = 0
+let activityCursor = 0
 let inflight = false
 let disposed = false
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -60,6 +78,21 @@ async function tick() {
     agents.value = detail.agents
     usage.value = detail.usage
 
+    const childRoster = await fetchSubagents(props.adwId)
+    subagents.value = childRoster
+    if (!selectedSubagentId.value && childRoster.length) selectedSubagentId.value = childRoster[0]!.subagent_id
+    let activityHasMore = false
+    if (selectedSubagentId.value && childRoster.some((c) => c.subagent_id === selectedSubagentId.value)) {
+      const [child, activityPage] = await Promise.all([
+        fetchSubagent(props.adwId, selectedSubagentId.value),
+        fetchSubagentActivity(props.adwId, selectedSubagentId.value, activityCursor),
+      ])
+      subagentDetail.value = child
+      activityCursor = Math.max(activityCursor, activityPage.cursor)
+      subagentActivities.value = mergeActivities(subagentActivities.value, activityPage.activities)
+      activityHasMore = activityPage.has_more
+    }
+
     // Exactly one bounded page is handled per turn. A backlog schedules its
     // next cursor page immediately, while an exhausted live trace waits.
     const page = await fetchEvents(props.adwId, cursor, EVENT_PAGE_LIMIT)
@@ -80,7 +113,12 @@ async function tick() {
     loaded.value = true
     // A completed session drains every cursor page, then becomes entirely
     // static. A running session keeps one non-overlapping live poll alive.
-    nextDelay = page.has_more ? 0 : detail.session.status === 'running' ? LIVE_POLL_MS : null
+    const childRunning = childRoster.some((child) => child.status === 'running')
+    nextDelay = page.has_more || activityHasMore
+      ? 0
+      : detail.session.status === 'running' || childRunning
+        ? LIVE_POLL_MS
+        : null
   } catch (err) {
     apiError.value = err instanceof Error ? err.message : String(err)
     nextDelay = RETRY_MS
@@ -389,6 +427,17 @@ interface ToolTick {
   ok: boolean
 }
 
+const nestedByPhase = computed<Record<string, { count: number; running: number }>>(() => {
+  const map: Record<string, { count: number; running: number }> = {}
+  for (const child of subagents.value) {
+    if (!child.phase_id) continue
+    const stats = (map[child.phase_id] ??= { count: 0, running: 0 })
+    stats.count += 1
+    if (child.status === 'running') stats.running += 1
+  }
+  return map
+})
+
 const toolTicks = computed(() => {
   const map: Record<string, ToolTick[]> = {}
   for (const e of events.value) {
@@ -432,6 +481,15 @@ const sessionDurationMs = computed(() => {
 
 function selectPhase(p: Phase) {
   navigate(props.adwId, p.phase_id === props.phaseId ? null : p.phase_id)
+}
+
+function selectSubagent(id: string) {
+  if (selectedSubagentId.value === id) return
+  selectedSubagentId.value = id
+  subagentDetail.value = null
+  subagentActivities.value = []
+  activityCursor = 0
+  if (!inflight) void tick()
 }
 </script>
 
@@ -516,6 +574,14 @@ function selectPhase(p: Phase) {
                   STATUS_GLYPH[p.status ?? ''] ?? '○'
                 }}</span>
                 <span class="b-name">{{ p.name }}</span>
+                <span
+                  v-if="nestedByPhase[p.phase_id]"
+                  class="nested-badge"
+                  :class="{ live: nestedByPhase[p.phase_id]!.running > 0 }"
+                  :title="`${nestedByPhase[p.phase_id]!.count} nested subagent conversations, ${nestedByPhase[p.phase_id]!.running} live`"
+                >
+                  {{ nestedByPhase[p.phase_id]!.count }} nested<span v-if="nestedByPhase[p.phase_id]!.running"> · {{ nestedByPhase[p.phase_id]!.running }} live</span>
+                </span>
                 <StatChip
                   v-if="Number.isFinite(blockDurationMs(p))"
                   class="b-dur"
@@ -554,6 +620,15 @@ function selectPhase(p: Phase) {
     </div>
     <div v-else-if="loaded" class="empty-state">no phases recorded for this session</div>
     <div v-else-if="!apiError" class="empty-state">loading trace…</div>
+
+    <SubagentInspector
+      :children="subagents"
+      :selected-id="selectedSubagentId"
+      :detail="subagentDetail"
+      :activities="subagentActivities"
+      :now-ms="nowMs"
+      @select="selectSubagent"
+    />
 
     <PhaseDetail
       v-if="selectedPhase"
@@ -818,6 +893,22 @@ function selectPhase(p: Phase) {
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.nested-badge {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.nested-badge.live {
+  color: var(--blue);
+  border-color: var(--blue);
+  animation: pulse 1.2s ease-in-out infinite;
 }
 
 .block .b-dur {

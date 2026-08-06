@@ -318,6 +318,87 @@ export interface HealthResponse {
   sessions: number;
 }
 
+// ── nested Pi subagents (deliberately separate from configured agents) ──────
+
+export type SubagentStatus =
+  | "running"
+  | "success"
+  | "error"
+  | "cancelled"
+  | "killed"
+  | "interrupted";
+
+export interface SubagentSummary {
+  subagent_id: string;
+  adw_id: string;
+  phase_id: string | null;
+  parent_agent: string | null;
+  display_id: number | null;
+  parent_tool_call_id: string | null;
+  parent_event_id: string | null;
+  task: string | null;
+  model: string | null;
+  thinking: string | null;
+  session_path: string | null;
+  status: SubagentStatus | null;
+  created_at: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_ms: number | null;
+  removed_at: string | null;
+  turn_count: number;
+  tool_count: number;
+}
+
+export interface SubagentTurn {
+  turn_id: string;
+  subagent_id: string;
+  turn: number;
+  parent_tool_call_id: string | null;
+  parent_event_id: string | null;
+  prompt: string | null;
+  model: string | null;
+  thinking: string | null;
+  pid: number | null;
+  status: SubagentStatus | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_ms: number | null;
+  result: string | null;
+  error: string | null;
+  tool_count: number | null;
+  raw_output_path: string | null;
+  session_path: string | null;
+}
+
+export interface SubagentDetail extends SubagentSummary {
+  turns: SubagentTurn[];
+}
+
+export interface SubagentActivity {
+  cursor: number;
+  telemetry_id: string;
+  activity_id: string | null;
+  subagent_id: string;
+  turn: number | null;
+  tool_call_id: string | null;
+  tool: string | null;
+  args_json: string | null;
+  result_snippet: string | null;
+  ok: number | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_ms: number | null;
+}
+
+export interface SubagentActivitiesPage {
+  activities: SubagentActivity[];
+  cursor: number;
+  has_more: boolean;
+}
+
+export type SubagentsResponse = SubagentSummary[];
+
 export interface ApiError {
   error: string;
 }

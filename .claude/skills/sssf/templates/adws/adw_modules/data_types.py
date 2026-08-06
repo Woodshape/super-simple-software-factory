@@ -371,6 +371,17 @@ class EventRecord(BaseModel):
 
 # ── Pi coding agent interface ────────────────────────────────────────────────
 
+class SubagentTraceContext(BaseModel):
+    """Trusted context passed only to the configured parent Pi process."""
+
+    version: Literal[1] = 1
+    adw_id: str
+    phase_id: str
+    parent_agent: str
+    root: str
+    telemetry_path: str
+
+
 class PiRequest(BaseModel):
     """Everything one non-interactive pi run needs."""
 
@@ -383,6 +394,7 @@ class PiRequest(BaseModel):
     raw_output_path: str            # JSONL stream lands here
     tools: list[str] | None = None
     extensions: list[str] = Field(default_factory=list)
+    trace_context: SubagentTraceContext | None = None
     cwd: str = "."                  # set from run.repo_root — the codebase root agents work in
 
 

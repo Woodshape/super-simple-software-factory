@@ -1,6 +1,6 @@
 # Observability Reference
 
-The event schema, the seven SQLite tables, and the polling contract — the one data path is **agents → sqlite → web ui**.
+The event schema, SQLite tables, and polling contract — the configured-agent path is **agents → sqlite → web ui**; nested Pi children use **extension telemetry JSONL → tracer → sqlite → web ui**.
 
 ## Two stores, one truth
 
@@ -110,8 +110,8 @@ gate_results (
 processes (                        -- adw_id → pid, so a stuck run can be stopped
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   adw_id        TEXT REFERENCES sessions,
-  kind          TEXT,               -- 'adw' (the workflow process) | 'agent' (a coding-agent child)
-  name          TEXT,               -- '' for the adw, the agent name for a child
+  kind          TEXT,               -- 'adw' | configured 'agent' | nested 'subagent'
+  name          TEXT,               -- agent name, or {subagent_id}:{turn} for a nested process
   pid           INTEGER,
   command       TEXT,               -- what the pid WAS; pids get recycled, so verify before killing
   started_at    TEXT, ended_at TEXT -- ended_at NULL = believed alive
@@ -127,9 +127,57 @@ agent_sessions (                   -- the queryable mirror of agent_map.json
   created_at    TEXT, last_used_at TEXT,
   PRIMARY KEY (adw_id, agent)
 );
+
+subagents (                        -- one stable nested conversation
+  subagent_id TEXT PRIMARY KEY,
+  adw_id TEXT REFERENCES sessions, phase_id TEXT REFERENCES phases,
+  parent_agent TEXT, display_id INTEGER,
+  parent_tool_call_id TEXT, parent_event_id TEXT,
+  task TEXT, session_path TEXT, status TEXT,
+  created_at TEXT, started_at TEXT, ended_at TEXT, duration_ms INTEGER,
+  removed_at TEXT
+);
+
+subagent_turns (                   -- initial task plus every continuation
+  turn_id TEXT PRIMARY KEY, subagent_id TEXT REFERENCES subagents,
+  adw_id TEXT, phase_id TEXT, turn INTEGER,
+  parent_tool_call_id TEXT, parent_event_id TEXT,
+  prompt TEXT, model TEXT, thinking TEXT, pid INTEGER,
+  status TEXT, started_at TEXT, ended_at TEXT, duration_ms INTEGER,
+  result TEXT, error TEXT, tool_count INTEGER,
+  raw_output_path TEXT, session_path TEXT,
+  start_telemetry_id TEXT UNIQUE, finish_telemetry_id TEXT UNIQUE,
+  UNIQUE(subagent_id, turn)
+);
+
+subagent_activities (              -- cursor-paged completed child tools
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  telemetry_id TEXT UNIQUE, activity_id TEXT,
+  subagent_id TEXT REFERENCES subagents, adw_id TEXT, turn INTEGER,
+  tool_call_id TEXT, tool TEXT, args_json TEXT, result_snippet TEXT, ok INTEGER,
+  started_at TEXT, ended_at TEXT, duration_ms INTEGER
+);
 ```
 
 **A hung agent emits nothing**, which is exactly when you need its pid: no events, no tokens, no output to read. `processes` is the only table that can answer "what is this run running, and how do I stop it" — `just procs <adw_id>` lists what is live, `just kill <adw_id>` stops children before the parent, and both verify the recorded `command` still matches the pid before signalling it. A killed run finalizes its own trace: SIGTERM and SIGINT are turned into `SystemExit` in `session.ensure`, so the session lands on `fail` with its process rows closed instead of reading `running` forever.
+
+### Nested Pi subagents
+
+Nested children are intentionally not configured agents or phases. Three additive tables retain their separate identities:
+
+- `subagents`: one stable conversation id, local display number, configured parent agent/phase, parent Pi tool-call/event links, target-repo session path, lifecycle status, and removal metadata.
+- `subagent_turns`: the initial task and every continuation, preserving each prompt, model/thinking, PID, timestamps/duration, complete result/error, and tool count. Continuations reuse the same child session file and append a turn.
+- `subagent_activities`: cursor-ordered normalized child tool completions with arguments, result snippets, success, and timing. `telemetry_id` uniqueness makes final drains/retries idempotent.
+
+With harness trace context, files live at `sessions/{adw_id}/{parent_agent}/subagents/{subagent_id}/`: `session.jsonl`, `turn-N/raw_output.jsonl`, and `turn-N/result.txt`. The shared `telemetry.jsonl` is tailed while the configured parent runs; only Python's tracer writes SQLite. Nested PIDs use `processes.kind = 'subagent'`. Session finalization changes any leftover live child/turn to `interrupted` and closes its process row. Without trace context the extension remains standalone and keeps its normal `~/.pi` session location without emitting SSSF telemetry.
+
+The local read API exposes:
+
+- `GET /api/sessions/:adw_id/subagents` — bounded summaries, no full results/tool payloads;
+- `GET /api/sessions/:adw_id/subagents/:subagent_id` — all ordered turns and full results;
+- `GET /api/sessions/:adw_id/subagents/:subagent_id/activity?after=<id>&limit=<n>` — cursor-paged tools.
+
+Lookups are ADW-scoped. Databases predating these optional tables return an empty roster. Existing `EventType`, `SessionDetail.agents`, phase lanes, and configured-agent cards retain their prior meaning. The API and UI remain loopback-only; this adds no remote transport, authentication, or CORS policy.
 
 **Derived, never stored:** phase durations (`ended_at − started_at`), session phase-progress (query `phases` by `adw_id`), lane layout (`kind` + `owner`).
 

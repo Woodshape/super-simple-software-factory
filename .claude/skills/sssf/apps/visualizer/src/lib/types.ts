@@ -24,4 +24,11 @@ export type {
   PhaseStatus,
   PhaseKind,
   EventType,
+  SubagentStatus,
+  SubagentSummary,
+  SubagentTurn,
+  SubagentDetail,
+  SubagentActivity,
+  SubagentActivitiesPage,
+  SubagentsResponse,
 } from '@shared/types'

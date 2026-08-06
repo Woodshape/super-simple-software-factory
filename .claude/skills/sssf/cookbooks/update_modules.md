@@ -97,4 +97,4 @@ Reusable gates live in `gates.py`; genuine one-offs can be defined inline at the
 
 ## Before you finish
 
-Run the smoke ADW — `uv run adws/adw_prompt.py "ping"` — since every module change rides the same path a real run does.
+Run the smoke ADW — `uv run adws/adw_prompt.py "ping"` — since every module change rides the same path a real run does. Changes to nested-agent telemetry belong in the distributable `templates/harness_engineering/` and `templates/adws/adw_modules/` sources; refresh an installed target with `install.py --force` (after backing up target-owned config/prompt edits) rather than editing its stamped runtime copy.

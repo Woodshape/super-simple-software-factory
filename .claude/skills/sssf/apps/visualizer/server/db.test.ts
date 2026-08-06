@@ -163,6 +163,73 @@ describe("bounded card timelines", () => {
   });
 });
 
+describe("nested subagent projection", () => {
+  test("keeps children scoped and pages their activity without changing configured agents", () => {
+    const { path, setup } = fixture();
+    insertSession(setup, "nested", 0);
+    insertSession(setup, "other", 0);
+    insertPhase(setup, "phase-nested", "nested", "planner");
+    setup.exec(`
+      CREATE TABLE subagents (
+        subagent_id TEXT PRIMARY KEY, adw_id TEXT, phase_id TEXT, parent_agent TEXT,
+        display_id INTEGER, parent_tool_call_id TEXT, parent_event_id TEXT, task TEXT,
+        session_path TEXT, status TEXT, created_at TEXT, started_at TEXT, ended_at TEXT,
+        duration_ms INTEGER, removed_at TEXT
+      );
+      CREATE TABLE subagent_turns (
+        turn_id TEXT PRIMARY KEY, subagent_id TEXT, adw_id TEXT, phase_id TEXT, turn INTEGER,
+        parent_tool_call_id TEXT, parent_event_id TEXT, prompt TEXT, model TEXT, thinking TEXT,
+        pid INTEGER, status TEXT, started_at TEXT, ended_at TEXT, duration_ms INTEGER,
+        result TEXT, error TEXT, tool_count INTEGER, raw_output_path TEXT, session_path TEXT
+      );
+      CREATE TABLE subagent_activities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, telemetry_id TEXT, activity_id TEXT,
+        subagent_id TEXT, adw_id TEXT, turn INTEGER, tool_call_id TEXT, tool TEXT,
+        args_json TEXT, result_snippet TEXT, ok INTEGER, started_at TEXT, ended_at TEXT,
+        duration_ms INTEGER
+      );
+      INSERT INTO subagents VALUES
+        ('child','nested','phase-nested','planner',1,'parent-call','parent-event','continue',
+         '/target/session.jsonl','success','2024-01-01','2024-01-01','2024-01-02',10,NULL),
+        ('wrong','other',NULL,'planner',1,NULL,NULL,'other',NULL,'success','2024',NULL,NULL,0,NULL);
+      INSERT INTO subagent_turns VALUES
+        ('child:1','child','nested','phase-nested',1,'parent-call','parent-event','start','m1','high',1,
+         'success','2024',NULL,5,'first result',NULL,1,NULL,'/target/session.jsonl'),
+        ('child:2','child','nested','phase-nested',2,NULL,NULL,'continue','m2','medium',2,
+         'success','2024',NULL,5,'second result',NULL,2,NULL,'/target/session.jsonl');
+      INSERT INTO subagent_activities
+        (telemetry_id,activity_id,subagent_id,adw_id,turn,tool_call_id,tool,args_json,ok)
+        VALUES ('a','a','child','nested',1,'a','read','{}',1),
+               ('b','b','child','nested',2,'b','bash','{}',1),
+               ('c','c','child','nested',2,'c','grep','{}',0);
+    `);
+    setup.close();
+
+    const db = new SssfDb(path);
+    expect(db.subagents("nested")).toHaveLength(1);
+    expect(db.subagents("nested")[0]).toMatchObject({ model: "m2", turn_count: 2, tool_count: 3 });
+    expect(db.subagent("nested", "child")?.turns.map((turn) => turn.result)).toEqual([
+      "first result", "second result",
+    ]);
+    expect(db.subagent("other", "child")).toBeNull();
+    const first = db.subagentActivities("nested", "child", 0, 2)!;
+    const second = db.subagentActivities("nested", "child", first.cursor, 2)!;
+    expect([...first.activities, ...second.activities].map((row) => row.tool)).toEqual(["read", "bash", "grep"]);
+    expect(db.agentSessions("nested")).toEqual([]);
+    db.close();
+  });
+
+  test("returns an empty roster for legacy databases", () => {
+    const { path, setup } = fixture();
+    insertSession(setup, "legacy", 0);
+    setup.close();
+    const db = new SssfDb(path);
+    expect(db.subagents("legacy")).toEqual([]);
+    expect(db.subagent("legacy", "missing")).toBeNull();
+    db.close();
+  });
+});
+
 describe("event cursor", () => {
   test("pages without gaps or duplicates", () => {
     const { path, setup } = fixture();

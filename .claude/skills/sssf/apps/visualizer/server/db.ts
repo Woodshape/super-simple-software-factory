@@ -27,6 +27,11 @@ import type {
   SessionDetail,
   SessionSummary,
   SessionUsage,
+  SubagentActivitiesPage,
+  SubagentActivity,
+  SubagentDetail,
+  SubagentSummary,
+  SubagentTurn,
 } from "../shared/types.ts";
 
 const DEFAULT_DB_RELATIVE = "adws/adw_data/sssf.db";
@@ -74,6 +79,7 @@ export class SssfDb {
   private writer: Database | null = null;
   /** Cache for optionalColumn(), keyed "table.column". Only ever false → true. */
   private readonly columnCache = new Map<string, boolean>();
+  private readonly tableCache = new Map<string, boolean>();
 
   constructor(path: string) {
     if (!existsSync(path)) {
@@ -132,6 +138,18 @@ export class SssfDb {
 
   private optionalColumn(table: string, column: string): string {
     return this.hasColumn(table, column) ? column : `NULL AS ${column}`;
+  }
+
+  private hasTable(table: string): boolean {
+    if (!this.tableCache.get(table)) {
+      const row = this.db
+        .query<{ present: number }, [string]>(
+          "SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?",
+        )
+        .get(table);
+      this.tableCache.set(table, Boolean(row));
+    }
+    return this.tableCache.get(table) ?? false;
   }
 
   close(): void {
@@ -451,6 +469,67 @@ export class SssfDb {
       events,
       cursor: events.length > 0 ? events[events.length - 1]!.rowid : Math.max(0, after),
       has_more: events.length === cappedLimit,
+    };
+  }
+
+  /** Bounded child roster. Full results and tool payloads stay in detail endpoints. */
+  subagents(adwId: string): SubagentSummary[] {
+    if (!this.hasTable("subagents") || !this.hasTable("subagent_turns")) return [];
+    return this.db
+      .query<SubagentSummary, [string]>(
+        `SELECT s.subagent_id,s.adw_id,s.phase_id,s.parent_agent,s.display_id,
+                s.parent_tool_call_id,s.parent_event_id,s.task,
+                (SELECT t.model FROM subagent_turns t WHERE t.subagent_id=s.subagent_id
+                  ORDER BY t.turn DESC LIMIT 1) AS model,
+                (SELECT t.thinking FROM subagent_turns t WHERE t.subagent_id=s.subagent_id
+                  ORDER BY t.turn DESC LIMIT 1) AS thinking,
+                s.session_path,s.status,s.created_at,s.started_at,s.ended_at,s.duration_ms,
+                s.removed_at,
+                (SELECT COUNT(*) FROM subagent_turns t WHERE t.subagent_id=s.subagent_id) AS turn_count,
+                (SELECT COALESCE(SUM(t.tool_count),0) FROM subagent_turns t
+                  WHERE t.subagent_id=s.subagent_id) AS tool_count
+           FROM subagents s WHERE s.adw_id=? ORDER BY s.created_at,s.rowid`,
+      )
+      .all(adwId);
+  }
+
+  subagent(adwId: string, subagentId: string): SubagentDetail | null {
+    const summary = this.subagents(adwId).find((row) => row.subagent_id === subagentId);
+    if (!summary) return null;
+    const turns = this.db
+      .query<SubagentTurn, [string, string]>(
+        `SELECT turn_id,subagent_id,turn,parent_tool_call_id,parent_event_id,prompt,model,
+                thinking,pid,status,started_at,ended_at,duration_ms,result,error,tool_count,
+                raw_output_path,session_path
+           FROM subagent_turns WHERE adw_id=? AND subagent_id=? ORDER BY turn`,
+      )
+      .all(adwId, subagentId);
+    return { ...summary, turns };
+  }
+
+  subagentActivities(
+    adwId: string,
+    subagentId: string,
+    after = 0,
+    limit = DEFAULT_LIMIT,
+  ): SubagentActivitiesPage | null {
+    if (!this.subagent(adwId, subagentId)) return null;
+    if (!this.hasTable("subagent_activities")) {
+      return { activities: [], cursor: Math.max(0, after), has_more: false };
+    }
+    const cappedLimit = clamp(limit, 1, MAX_LIMIT);
+    const activities = this.db
+      .query<SubagentActivity, [string, string, number, number]>(
+        `SELECT id AS cursor,telemetry_id,activity_id,subagent_id,turn,tool_call_id,tool,
+                args_json,result_snippet,ok,started_at,ended_at,duration_ms
+           FROM subagent_activities WHERE adw_id=? AND subagent_id=? AND id>?
+          ORDER BY id LIMIT ?`,
+      )
+      .all(adwId, subagentId, Math.max(0, after), cappedLimit);
+    return {
+      activities,
+      cursor: activities.at(-1)?.cursor ?? Math.max(0, after),
+      has_more: activities.length === cappedLimit,
     };
   }
 

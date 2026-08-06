@@ -33,7 +33,9 @@ adws/
     ├── sessions/{adw_id}/                               gitignored runtime
     │   ├── agent_map.json       agent → coding-agent session_id + model
     │   ├── context_handoff/     the one place agents write files for the agents that follow
-    │   └── {agent}/{prompts/, raw_output.jsonl, envelope.json}
+    │   └── {agent}/{prompts/, raw_output.jsonl, envelope.json,
+    │       subagents/telemetry.jsonl,
+    │       subagents/{subagent_id}/{session.jsonl, turn-N/{raw_output.jsonl,result.txt}}}
     └── sssf.db                  gitignored SQLite trace db the visualizer polls
 ```
 
