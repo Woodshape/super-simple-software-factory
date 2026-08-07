@@ -103,6 +103,34 @@ def test_nested_turns_activity_and_reconciliation_are_durable(tmp_path):
         "SELECT COUNT(*) FROM processes WHERE ended_at IS NULL").fetchone()[0] == 0
 
 
+def test_session_finish_closes_stale_running_phases(tmp_path):
+    tracer = Tracer(tmp_path / "sssf.db", tmp_path / "events.jsonl")
+    tracer.session_start("run", "engineer")
+    tracer.conn.executemany(
+        "INSERT INTO phases "
+        "(phase_id,adw_id,seq,name,kind,owner,status,started_at,ended_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        [
+            ("stale", "run", 1, "plan", "agent", "planner", "running",
+             "2025-01-01T00:00:00Z", None),
+            ("complete", "run", 2, "request", "engineer", "engineer", "success",
+             "2025-01-01T00:00:01Z", "2025-01-01T00:00:02Z"),
+        ],
+    )
+
+    tracer.session_finish("run", ok=True)
+
+    assert tracer.conn.execute(
+        "SELECT status FROM sessions WHERE adw_id='run'").fetchone()[0] == "success"
+    stale = tracer.conn.execute(
+        "SELECT status,error,ended_at FROM phases WHERE phase_id='stale'").fetchone()
+    assert stale[0:2] == ("fail", "session finalized before phase completed")
+    assert stale[2] is not None
+    assert tracer.conn.execute(
+        "SELECT status,ended_at FROM phases WHERE phase_id='complete'").fetchone() == (
+            "success", "2025-01-01T00:00:02Z")
+
+
 def test_telemetry_tail_skips_history_retains_partial_lines_and_rejects_wrong_context(tmp_path):
     telemetry = tmp_path / "sessions/run/planner/subagents/telemetry.jsonl"
     telemetry.parent.mkdir(parents=True)

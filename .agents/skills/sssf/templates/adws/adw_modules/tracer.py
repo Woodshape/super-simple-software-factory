@@ -188,6 +188,16 @@ class Tracer:
 
     def session_finish(self, adw_id: str, ok: bool) -> None:
         ended = now_iso()
+        # Finalize phases before their session so readers can never observe a
+        # terminal session with a phase that still claims to be live. This also
+        # reconciles phases left behind by an uncatchable process termination
+        # when the same ADW is later resumed and finalized.
+        self.conn.execute(
+            "UPDATE phases SET status='fail', ended_at=?, "
+            "error=COALESCE(error, 'session finalized before phase completed') "
+            "WHERE adw_id=? AND status='running'",
+            (ended, adw_id),
+        )
         self.conn.execute(
             "UPDATE sessions SET status=?, ended_at=? WHERE adw_id=?",
             ("success" if ok else "fail", ended, adw_id),

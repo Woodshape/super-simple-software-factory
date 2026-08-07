@@ -159,7 +159,7 @@ subagent_activities (              -- cursor-paged completed child tools
 );
 ```
 
-**A hung agent emits nothing**, which is exactly when you need its pid: no events, no tokens, no output to read. `processes` is the only table that can answer "what is this run running, and how do I stop it" — `just procs <adw_id>` lists what is live, `just kill <adw_id>` stops children before the parent, and both verify the recorded `command` still matches the pid before signalling it. A killed run finalizes its own trace: SIGTERM and SIGINT are turned into `SystemExit` in `session.ensure`, so the session lands on `fail` with its process rows closed instead of reading `running` forever.
+**A hung agent emits nothing**, which is exactly when you need its pid: no events, no tokens, no output to read. `processes` is the only table that can answer "what is this run running, and how do I stop it" — `just procs <adw_id>` lists what is live, `just kill <adw_id>` stops children before the parent, and both verify the recorded `command` still matches the pid before signalling it. SIGTERM and SIGINT are turned into `SystemExit` in `session.ensure`, so a catchable termination lands the session on `fail`. A harder termination can prevent Python from unwinding; when that ADW is later resumed, the next session finalization reconciles every leftover `running` phase to `fail` with an end time before publishing the terminal session status. The persisted invariant is therefore: a terminal session never contains a phase that still claims to be running.
 
 ### Nested Pi subagents
 
