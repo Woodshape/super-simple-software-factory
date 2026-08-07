@@ -28,8 +28,8 @@ const messageCapable = computed(() => nested.value !== null || configured.value?
 const messageAgentId = computed(() => messageCapable.value ? (props.agent?.agent_id ?? configured.value?.phase_id ?? null) : null)
 const messageAdwId = computed(() => messageCapable.value ? (props.agent?.adw_id ?? configured.value?.adw_id ?? null) : null)
 const messageKey = computed(() => `${messageAdwId.value ?? ''}:${messageAgentId.value ?? ''}`)
-const mode = ref<'messages' | 'actions'>('messages')
-watch(messageKey, () => { mode.value = 'messages' }, { flush: 'sync' })
+const mode = ref<'messages' | 'actions'>('actions')
+watch(messageKey, () => { mode.value = 'actions' }, { flush: 'sync' })
 const configuredDuration = computed(() => {
   const phase = configured.value
   const start = ts(phase?.started_at)

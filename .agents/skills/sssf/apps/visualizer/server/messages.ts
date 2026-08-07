@@ -148,18 +148,132 @@ function inConfiguredPhase(timestamp: string | undefined, agent: AgentDetail): b
   return (!Number.isFinite(start) || time >= start) && (!Number.isFinite(end) || time <= end);
 }
 
-interface PendingMessage extends Omit<AgentMessage, "cursor" | "id"> {}
+type WithoutIdentity<T> = T extends unknown ? Omit<T, "cursor" | "id"> : never;
+type PendingMessage = WithoutIdentity<AgentMessage>;
 
-function visibleBlocks(record: Record<string, unknown>, turn: number | undefined): PendingMessage[] {
+interface TrackedCall {
+  id: string;
+  realId?: string;
+  tool: string;
+  argumentsJson: string;
+  timestamp?: string;
+  turn?: number;
+  allowed: boolean;
+  started: boolean;
+  closed: boolean;
+}
+
+interface ParserState {
+  messages: PendingMessage[];
+  realCalls: Map<string, TrackedCall>;
+  anonymousCalls: TrackedCall[];
+  emittedResults: Set<string>;
+  fileOrdinal: number;
+  turn?: number;
+}
+
+function providerId(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function toolName(value: unknown, fallback = "tool"): string {
+  return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function argumentsJson(value: unknown): string {
+  return JSON.stringify(value === undefined ? null : value);
+}
+
+function syntheticId(state: ParserState, recordOrdinal: number, blockOrdinal: number): string {
+  return `synthetic-${state.fileOrdinal + 1}-${recordOrdinal + 1}-${blockOrdinal + 1}`;
+}
+
+function entryContext(timestamp: string | undefined, turn: number | undefined) {
+  return {
+    ...(timestamp === undefined ? {} : { timestamp }),
+    ...(turn === undefined ? {} : { turn }),
+  };
+}
+
+function emitCall(state: ParserState, call: TrackedCall): void {
+  if (!call.allowed) return;
+  state.messages.push({
+    role: "tool_call",
+    tool: call.tool,
+    tool_call_id: call.id,
+    arguments_json: call.argumentsJson,
+    ...entryContext(call.timestamp, call.turn),
+  });
+}
+
+function createCall(
+  state: ParserState,
+  agent: AgentDetail,
+  recordOrdinal: number,
+  blockOrdinal: number,
+  idValue: unknown,
+  toolValue: unknown,
+  argsValue: unknown,
+  timestamp: string | undefined,
+): TrackedCall {
+  const realId = providerId(idValue);
+  const call: TrackedCall = {
+    id: realId ?? syntheticId(state, recordOrdinal, blockOrdinal),
+    ...(realId === undefined ? {} : { realId }),
+    tool: toolName(toolValue),
+    argumentsJson: argumentsJson(argsValue),
+    ...(timestamp === undefined ? {} : { timestamp }),
+    ...(state.turn === undefined ? {} : { turn: state.turn }),
+    allowed: inConfiguredPhase(timestamp, agent),
+    started: false,
+    closed: false,
+  };
+  if (realId === undefined) state.anonymousCalls.push(call);
+  else state.realCalls.set(realId, call);
+  emitCall(state, call);
+  return call;
+}
+
+function textResult(value: unknown): string {
+  if (value === null || typeof value !== "object") return "";
+  const content = (value as Record<string, unknown>).content;
+  if (!Array.isArray(content)) return "";
+  let result = "";
+  for (const part of content) {
+    if (part === null || typeof part !== "object") continue;
+    const block = part as Record<string, unknown>;
+    if (block.type === "text" && typeof block.text === "string") result += block.text;
+  }
+  return result;
+}
+
+function anonymousMatch(
+  state: ParserState,
+  tool: string | undefined,
+  args: string | undefined,
+  forStart: boolean,
+): TrackedCall | undefined {
+  const open = state.anonymousCalls.filter((call) => !call.closed && (!forStart || !call.started));
+  return open.find((call) =>
+    (tool === undefined || call.tool === tool) && (args === undefined || call.argumentsJson === args));
+}
+
+function visibleMessage(
+  state: ParserState,
+  agent: AgentDetail,
+  record: Record<string, unknown>,
+  recordOrdinal: number,
+): void {
   const message = record.message;
-  if (message === null || typeof message !== "object") return [];
+  if (message === null || typeof message !== "object") return;
   const row = message as Record<string, unknown>;
   const role = row.role;
-  if (role !== "user" && role !== "assistant") return [];
-  if (!Array.isArray(row.content)) return [];
+  if (role !== "user" && role !== "assistant") return;
+  if (!Array.isArray(row.content)) return;
   const timestamp = timestampOf(record, row);
-  const result: PendingMessage[] = [];
-  for (const value of row.content) {
+  const allowed = inConfiguredPhase(timestamp, agent);
+  for (let blockOrdinal = 0; blockOrdinal < row.content.length; blockOrdinal += 1) {
+    const value = row.content[blockOrdinal];
     if (value === null || typeof value !== "object") continue;
     const block = value as Record<string, unknown>;
     let visibleRole: AgentMessageRole | null = null;
@@ -174,23 +288,137 @@ function visibleBlocks(record: Record<string, unknown>, turn: number | undefined
       visibleRole = "assistant";
       text = block.text;
     }
-    if (visibleRole === null || typeof text !== "string") continue;
-    result.push({
-      role: visibleRole,
-      text,
-      ...(timestamp === undefined ? {} : { timestamp }),
-      ...(turn === undefined ? {} : { turn }),
-    });
+    if (visibleRole !== null && typeof text === "string") {
+      if (allowed) state.messages.push({
+        role: visibleRole,
+        text,
+        ...entryContext(timestamp, state.turn),
+      });
+      continue;
+    }
+    if (role !== "assistant" || block.type !== "toolCall") continue;
+    const realId = providerId(block.id ?? block.toolCallId);
+    if (realId !== undefined && state.realCalls.has(realId)) continue;
+    createCall(
+      state, agent, recordOrdinal, blockOrdinal, realId,
+      block.name ?? block.toolName, block.arguments ?? block.args, timestamp,
+    );
   }
-  return result;
 }
 
-function parseFile(file: SourceFile, compact: boolean, agent: AgentDetail): PendingMessage[] {
+function executionStart(
+  state: ParserState,
+  agent: AgentDetail,
+  record: Record<string, unknown>,
+  recordOrdinal: number,
+): void {
+  const realId = providerId(record.toolCallId ?? record.id);
+  const timestamp = timestampOf(record, {});
+  const eventTool = typeof (record.toolName ?? record.name) === "string"
+    ? String(record.toolName ?? record.name) : undefined;
+  const hasArgs = Object.hasOwn(record, "args") || Object.hasOwn(record, "arguments");
+  const eventArgs = hasArgs ? argumentsJson(record.args ?? record.arguments) : undefined;
+  let call = realId === undefined
+    ? anonymousMatch(state, eventTool, eventArgs, true)
+    : state.realCalls.get(realId);
+  if (!call) {
+    call = createCall(
+      state, agent, recordOrdinal, 0, realId, eventTool,
+      hasArgs ? (record.args ?? record.arguments) : undefined, timestamp,
+    );
+  }
+  call.started = true;
+}
+
+function emitResult(
+  state: ParserState,
+  call: TrackedCall,
+  record: Record<string, unknown>,
+  timestamp: string | undefined,
+  resultContainer: unknown,
+): void {
+  if (state.emittedResults.has(call.id)) return;
+  state.emittedResults.add(call.id);
+  call.closed = true;
+  if (!call.allowed) return;
+  state.messages.push({
+    role: "tool_result",
+    tool: toolName(record.toolName ?? record.name, call.tool),
+    tool_call_id: call.id,
+    result: textResult(resultContainer),
+    is_error: record.isError === true,
+    ...entryContext(timestamp, state.turn),
+  });
+}
+
+function executionEnd(
+  state: ParserState,
+  agent: AgentDetail,
+  record: Record<string, unknown>,
+  recordOrdinal: number,
+): void {
+  const realId = providerId(record.toolCallId ?? record.id);
+  const timestamp = timestampOf(record, {});
+  const eventTool = typeof (record.toolName ?? record.name) === "string"
+    ? String(record.toolName ?? record.name) : undefined;
+  const hasArgs = Object.hasOwn(record, "args") || Object.hasOwn(record, "arguments");
+  const eventArgs = hasArgs ? argumentsJson(record.args ?? record.arguments) : undefined;
+  let call = realId === undefined
+    ? anonymousMatch(state, eventTool, eventArgs, false)
+    : state.realCalls.get(realId);
+  if (!call) {
+    call = createCall(
+      state, agent, recordOrdinal, 0, realId, eventTool,
+      hasArgs ? (record.args ?? record.arguments) : undefined, timestamp,
+    );
+  }
+  emitResult(state, call, record, timestamp, record.result);
+}
+
+function compactToolResult(
+  state: ParserState,
+  agent: AgentDetail,
+  record: Record<string, unknown>,
+  row: Record<string, unknown>,
+  recordOrdinal: number,
+): void {
+  const realId = providerId(row.toolCallId ?? row.id);
+  const timestamp = timestampOf(record, row);
+  const eventTool = typeof (row.toolName ?? row.name) === "string"
+    ? String(row.toolName ?? row.name) : undefined;
+  const hasArgs = Object.hasOwn(row, "args") || Object.hasOwn(row, "arguments");
+  const eventArgs = hasArgs ? argumentsJson(row.args ?? row.arguments) : undefined;
+  let call = realId === undefined
+    ? anonymousMatch(state, eventTool, eventArgs, false)
+    : state.realCalls.get(realId);
+  if (!call) {
+    call = createCall(
+      state, agent, recordOrdinal, 0, realId, eventTool,
+      hasArgs ? (row.args ?? row.arguments) : undefined, timestamp,
+    );
+  }
+  emitResult(state, call, {
+    toolName: row.toolName ?? row.name,
+    isError: row.isError,
+  }, timestamp, row);
+}
+
+function parseFile(
+  file: SourceFile,
+  compact: boolean,
+  agent: AgentDetail,
+  fileOrdinal: number,
+): PendingMessage[] {
   let text: string;
   try { text = readFileSync(file.path, "utf8"); } catch { return []; }
-  const messages: PendingMessage[] = [];
-  // Splitting also tolerates a live final fragment: every malformed line is isolated.
-  for (const line of text.split("\n")) {
+  const state: ParserState = {
+    messages: [], realCalls: new Map(), anonymousCalls: [], emittedResults: new Set(),
+    fileOrdinal, ...(file.turn === undefined ? {} : { turn: file.turn }),
+  };
+  // Splitting isolates malformed records and leaves an incomplete live tail invisible.
+  const lines = text.split("\n");
+  for (let recordOrdinal = 0; recordOrdinal < lines.length; recordOrdinal += 1) {
+    const line = lines[recordOrdinal];
     if (!line) continue;
     let record: Record<string, unknown>;
     try {
@@ -200,14 +428,21 @@ function parseFile(file: SourceFile, compact: boolean, agent: AgentDetail): Pend
     } catch {
       continue;
     }
-    if (compact ? record.type !== "message" : record.type !== "message_end") continue;
-    const message = record.message;
-    if (message === null || typeof message !== "object") continue;
-    const timestamp = timestampOf(record, message as Record<string, unknown>);
-    if (!inConfiguredPhase(timestamp, agent)) continue;
-    messages.push(...visibleBlocks(record, file.turn));
+    if (compact) {
+      if (record.type !== "message") continue;
+      const message = record.message;
+      if (message === null || typeof message !== "object") continue;
+      const row = message as Record<string, unknown>;
+      if (row.role === "toolResult") compactToolResult(state, agent, record, row, recordOrdinal);
+      else visibleMessage(state, agent, record, recordOrdinal);
+      continue;
+    }
+    if (record.type === "message_end") visibleMessage(state, agent, record, recordOrdinal);
+    else if (record.type === "tool_execution_start") executionStart(state, agent, record, recordOrdinal);
+    else if (record.type === "tool_execution_end") executionEnd(state, agent, record, recordOrdinal);
+    // message_start, deltas, updates, turn_end, and tool execution updates are streaming-only.
   }
-  return messages;
+  return state.messages;
 }
 
 /**
@@ -231,7 +466,7 @@ export function loadAgentMessages(
     : nestedSource(root.path, agent);
   if (!source.available) return empty();
 
-  const pending = source.files.flatMap((file) => parseFile(file, source.compact, agent));
+  const pending = source.files.flatMap((file, index) => parseFile(file, source.compact, agent, index));
   const all = pending.map((message, index): AgentMessage => Object.assign(message, {
     cursor: index + 1,
     id: `message-${index + 1}`,

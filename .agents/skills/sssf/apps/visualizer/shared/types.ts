@@ -419,20 +419,45 @@ export interface AgentActivitiesPage {
 }
 
 /** A visible Pi conversation role. `thinking` is reasoning text, not AgentTurn.thinking's level. */
-export type AgentMessageRole = "user" | "thinking" | "assistant";
+export type AgentMessageRole = "user" | "thinking" | "assistant" | "tool_call" | "tool_result";
 
-/** One complete text block from a final Pi message snapshot, in source order. */
-export interface AgentMessage {
+interface AgentMessageBase {
   /** Stable, one-based position in the normalized visible flow. */
   cursor: number;
   /** Opaque stable ID derived only from source order, never from a filesystem path. */
   id: string;
-  role: AgentMessageRole;
-  /** The complete source string. It is never trimmed, summarized, or clipped. */
-  text: string;
   timestamp?: string;
   turn?: number;
 }
+
+/** One complete text block from a final Pi message snapshot, in source order. */
+export interface AgentTextMessage extends AgentMessageBase {
+  role: "user" | "thinking" | "assistant";
+  /** The complete source string. It is never trimmed, summarized, or clipped. */
+  text: string;
+}
+
+export interface AgentToolCallMessage extends AgentMessageBase {
+  role: "tool_call";
+  tool: string;
+  /** The real provider call ID, or a deterministic non-path-based ID when Pi omitted one. */
+  tool_call_id: string;
+  /** Unabridged JSON serialization of only the provider's arguments/args value. */
+  arguments_json: string;
+}
+
+export interface AgentToolResultMessage extends AgentMessageBase {
+  role: "tool_result";
+  tool: string;
+  /** The real provider call ID, or the synthetic ID shared with its call. */
+  tool_call_id: string;
+  /** All textual result content, unabridged and in content-block order. */
+  result: string;
+  is_error: boolean;
+}
+
+/** One immutable visible entry in the append-only Pi source flow. */
+export type AgentMessage = AgentTextMessage | AgentToolCallMessage | AgentToolResultMessage;
 
 /** GET /api/sessions/:adw_id/agents/:agent_id/messages */
 export interface AgentMessagesPage {

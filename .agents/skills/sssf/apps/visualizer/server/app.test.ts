@@ -59,19 +59,49 @@ function fixture(nested = true, withArchived = true) {
     thinkingSignature: "http-secret-signature",
     message: { role, content, timestamp },
   });
+  const toolStart = (prefix: string, tool: string, args: unknown) => JSON.stringify({
+    type: "tool_execution_start", toolCallId: `${prefix}-${tool}`, toolName: tool, args,
+    timestamp: "2025-01-01T00:00:03Z", fixture_path: dir,
+  });
+  const toolEnd = (prefix: string, tool: string, args: unknown, result: string) => JSON.stringify({
+    type: "tool_execution_end", toolCallId: `${prefix}-${tool}`, toolName: tool, args, isError: false,
+    timestamp: "2025-01-01T00:00:04Z", fixture_path: dir,
+    result: { content: [{ type: "text", text: result }], details: "provider-secret-details" },
+  });
+  const toolFlow = (prefix: string, label: string) => {
+    const args = {
+      bash: { command: `${label} printf full-command` },
+      read: { path: `/intentional/${label}/input.txt` },
+      write: { path: `/intentional/${label}/output.txt`, content: `${label}\nfull content` },
+    } as const;
+    return {
+      calls: ["bash", "read", "write"].map((tool) => ({
+        type: "toolCall", id: `${prefix}-${tool}`, name: tool, arguments: args[tool as keyof typeof args],
+      })),
+      events: [
+        ...(["bash", "read", "write"] as const).map((tool) => toolStart(prefix, tool, args[tool])),
+        ...(["bash", "read", "write"] as const).map((tool) => toolEnd(prefix, tool, args[tool], `${label} ${tool}\nfull result`)),
+      ],
+    };
+  };
+  const configuredTools = toolFlow("configured", "configured");
   mkdirSync(join(sessionsDir, "planner"), { recursive: true });
   writeFileSync(join(sessionsDir, "planner", "raw_output.jsonl"), [
     raw("user", [{ type: "text", text: "configured user" }], "2025-01-01T00:00:01Z"),
     raw("assistant", [
       { type: "thinking", thinking: "configured thinking", thinkingSignature: "block-signature" },
+      ...configuredTools.calls,
       { type: "text", text: "configured answer" },
     ], "2025-01-01T00:00:02Z"),
+    ...configuredTools.events,
   ].join("\n") + "\n");
   if (nested) {
+    const nestedTools = toolFlow("nested", "nested");
     mkdirSync(join(sessionsDir, "planner", "subagents", "child", "turn-1"), { recursive: true });
     writeFileSync(join(sessionsDir, "planner", "subagents", "child", "turn-1", "raw_output.jsonl"), [
       raw("user", [{ type: "text", text: "nested user" }], "2025-01-01T00:00:01Z"),
-      raw("assistant", [{ type: "text", text: "nested answer" }], "2025-01-01T00:00:02Z"),
+      raw("assistant", [...nestedTools.calls, { type: "text", text: "nested answer" }], "2025-01-01T00:00:02Z"),
+      ...nestedTools.events,
     ].join("\n") + "\n");
   }
   const db = new SssfDb(path);
@@ -182,38 +212,65 @@ describe("unified agent HTTP contracts", () => {
     } finally { await close(f); }
   });
 
-  test("serves the same safe, cursor-paged message contract for configured and nested agents", async () => {
+  test("serves complete, safe tool history over stable cursor pages for configured and nested agents", async () => {
     const f = fixture();
+    type Message = { cursor: number; id: string; role: string; [key: string]: unknown };
+    type Page = { messages: Message[]; cursor: number; has_more: boolean; available: boolean };
+    const allPages = async (agentId: string, limit: number) => {
+      const messages: Message[] = [];
+      let cursor = 0;
+      let serialized = "";
+      let hasMore = true;
+      do {
+        // Cursor pages are intentionally sequential: each request depends on the previous cursor.
+        // eslint-disable-next-line no-await-in-loop
+        const response = await f.get(`/api/sessions/run/agents/${agentId}/messages?after=${cursor}&limit=${limit}`);
+        expect(response.status).toBe(200);
+        // eslint-disable-next-line no-await-in-loop
+        const text = await response.text();
+        serialized += text;
+        const page = JSON.parse(text) as Page;
+        expect(page.available).toBe(true);
+        messages.push(...page.messages);
+        cursor = page.cursor;
+        hasMore = page.has_more;
+      } while (hasMore);
+      return { messages, serialized };
+    };
     try {
-      const configured = await f.get("/api/sessions/run/agents/phase/messages?after=0&limit=2");
-      expect(configured.status).toBe(200);
-      const first = await configured.json() as { messages: Array<{ role: string; text: string }>; cursor: number; has_more: boolean; available: boolean };
-      expect(first).toMatchObject({
-        available: true,
-        has_more: true,
-        messages: [
-          { role: "user", text: "configured user" },
-          { role: "thinking", text: "configured thinking" },
-        ],
-      });
-      const next = await f.get(`/api/sessions/run/agents/phase/messages?after=${first.cursor}&limit=2`);
-      expect(await next.json()).toMatchObject({
-        has_more: false,
-        messages: [{ role: "assistant", text: "configured answer" }],
-      });
+      const configured = await allPages("phase", 2);
+      expect(configured.messages.map((message) => message.role)).toEqual([
+        "user", "thinking", "tool_call", "tool_call", "tool_call", "assistant",
+        "tool_result", "tool_result", "tool_result",
+      ]);
+      expect(configured.messages.map((message) => message.cursor)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      expect(configured.messages.filter((message) => message.role === "tool_call"))
+        .toMatchObject([
+          { tool: "bash", tool_call_id: "configured-bash", arguments_json: "{\"command\":\"configured printf full-command\"}" },
+          { tool: "read", tool_call_id: "configured-read", arguments_json: "{\"path\":\"/intentional/configured/input.txt\"}" },
+          { tool: "write", tool_call_id: "configured-write" },
+        ]);
+      expect(configured.messages.filter((message) => message.role === "tool_result"))
+        .toMatchObject([
+          { tool_call_id: "configured-bash", result: "configured bash\nfull result", is_error: false },
+          { tool_call_id: "configured-read", result: "configured read\nfull result", is_error: false },
+          { tool_call_id: "configured-write", result: "configured write\nfull result", is_error: false },
+        ]);
 
-      const nested = await f.get("/api/sessions/run/agents/child/messages?after=0&limit=10");
-      expect(nested.status).toBe(200);
-      const text = await nested.text();
-      expect(JSON.parse(text)).toMatchObject({
-        available: true,
-        messages: [
-          { role: "user", text: "nested user", turn: 1 },
-          { role: "assistant", text: "nested answer", turn: 1 },
-        ],
-      });
-      expect(text).not.toContain(f.dir);
-      expect(text).not.toContain("signature");
+      const nested = await allPages("child", 3);
+      expect(nested.messages.map((message) => message.role)).toEqual([
+        "user", "tool_call", "tool_call", "tool_call", "assistant",
+        "tool_result", "tool_result", "tool_result",
+      ]);
+      expect(nested.messages.every((message) => message.cursor > 0 && message.turn === 1)).toBe(true);
+      expect(new Set(nested.messages.map((message) => message.cursor)).size).toBe(nested.messages.length);
+      expect(nested.serialized).toContain("nested printf full-command");
+      expect(nested.serialized).toContain("/intentional/nested/input.txt");
+      for (const serialized of [configured.serialized, nested.serialized]) {
+        expect(serialized).not.toContain(f.dir);
+        expect(serialized).not.toContain("signature");
+        expect(serialized).not.toContain("provider-secret-details");
+      }
     } finally { await close(f); }
   });
 
