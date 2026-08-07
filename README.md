@@ -54,7 +54,7 @@ Two steps: get the skill into your repo, then stamp the factory.
 
 ### Agentic Install
 
-Copy `.claude/skills/sssf/` into the target repo and type `/sssf install` inside Claude Code. The skill is named `sssf`, so that is the skill name followed by the `install` argument. There is no bare `/install` command. The agent reads the skill's own `cookbooks/install.md` and does the rest.
+Copy `.agents/skills/sssf/` into the target repo. Pi discovers project skills in `.agents/skills/` automatically; invoke `/skill:sssf install`, or simply ask the agent to install SSSF. The agent reads the skill's own `cookbooks/install.md` and does the rest.
 
 ### Manual Install
 
@@ -62,11 +62,11 @@ Copy `.claude/skills/sssf/` into the target repo and type `/sssf install` inside
 
 ```bash
 # 1. get the skill into the target repo
-mkdir -p .claude/skills
-cp -r /path/to/super-simple-software-factory/.claude/skills/sssf .claude/skills/
+mkdir -p .agents/skills
+cp -r /path/to/super-simple-software-factory/.agents/skills/sssf .agents/skills/
 
 # 2. stamp the factory (run from the target repo ROOT, the cwd is where everything lands)
-uv run .claude/skills/sssf/scripts/install.py
+uv run .agents/skills/sssf/scripts/install.py
 cp .env.sample .env                              # then set OPENROUTER_API_KEY
 pi --version                                     # confirm pi is on PATH, or set PI_PATH in .env
 git init && git commit --allow-empty -m init     # chains that end in a commit phase need a repo
@@ -123,7 +123,7 @@ There are three actors here, and the design keeps them separate on purpose: **th
   <img src="images/03_skill_stamp.svg" alt="The sssf skill directory on the left stamping config, adws, and prompt_engineering into three different target repos" width="780">
 </p>
 
-Everything lives in `.claude/skills/sssf/`. `SKILL.md` carries the hard rules and routes each request to one of nine cookbooks. `references/` holds the deep specs, `scripts/` holds the generators, `templates/` holds exactly what gets stamped.
+Everything lives in `.agents/skills/sssf/`. `SKILL.md` carries the hard rules and routes each request to one of nine cookbooks. `references/` holds the deep specs, `scripts/` holds the generators, `templates/` holds exactly what gets stamped.
 
 | What lands in your repo | Where it comes from | Tracked |
 |---|---|---|
@@ -268,10 +268,10 @@ That one cursor query is the entire transport. Live view and full history are th
 
 Files stay the raw record (`raw_output.jsonl`, `envelope.json`, `agent_map.json`). The db is the queryable mirror. Losing it loses nothing you cannot rebuild. Confirmed permanent deletion is the deliberate exception: it removes both representations of the selected archived run.
 
-The skill ships a local observability UI for this db at `.claude/skills/sssf/apps/visualizer/`: Vue and Vite served by Bun on loopback port 4600, with polled readonly observation plus human-triggered Archive/Restore and guarded permanent Delete controls. Its trace waterfall places live and historical nested Pi agents beneath their configured parent on the shared time axis. Configured and nested agents use the same detail interaction for identity, prompts/tasks, model/thinking, turns, results, and tools; configured-only session card telemetry remains unchanged.
+The skill ships a local observability UI for this db at `.agents/skills/sssf/apps/visualizer/`: Vue and Vite served by Bun on loopback port 4600, with polled readonly observation plus human-triggered Archive/Restore and guarded permanent Delete controls. Its trace waterfall places live and historical nested Pi agents beneath their configured parent on the shared time axis. Configured and nested agents use the same detail interaction for identity, prompts/tasks, model/thinking, turns, results, and tools; configured-only session card telemetry remains unchanged.
 
 ```bash
-cd .claude/skills/sssf/apps/visualizer && bun install
+cd .agents/skills/sssf/apps/visualizer && bun install
 SSSF_DB=/abs/path/to/your-repo/adws/adw_data/sssf.db bun run server/index.ts &
 bunx vite
 ```
@@ -284,7 +284,7 @@ It resolves its target through `--db`, then `SSSF_DB`, then `<cwd>/adws/adw_data
 
 ```
 super-simple-software-factory/          # the deployable factory, and nothing else
-└── .claude/skills/sssf/
+└── .agents/skills/sssf/
     ├── SKILL.md                        # hard rules + request routing table
     ├── cookbooks/                      # 9 orchestrator playbooks, loaded lazily
     ├── references/                     # config / handoff / observability specs

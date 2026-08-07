@@ -1,14 +1,14 @@
 # Install
 
-`/sssf install` — stamp the entire factory out of the skill and into the current working directory.
+`/skill:sssf install` in Pi, or an equivalent natural-language request — stamp the entire factory out of the skill and into the current working directory.
 
 ## Run it
 
 ```bash
-uv run .claude/skills/sssf/scripts/install.py
+uv run .agents/skills/sssf/scripts/install.py
 ```
 
-Run from the **target repo root** — the cwd is where everything lands. If the skill lives in your user scope, the path is `~/.claude/skills/sssf/scripts/install.py`.
+Run from the **target repo root** — the cwd is where everything lands. If the skill lives in your user scope, the path is `~/.agents/skills/sssf/scripts/install.py`.
 
 ## What gets stamped
 

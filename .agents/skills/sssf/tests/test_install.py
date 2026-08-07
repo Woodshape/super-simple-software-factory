@@ -33,8 +33,10 @@ class ScoutPlanInstallTests(unittest.TestCase):
             self.assertEqual(TEMPLATE_WORKFLOW.read_bytes(), installed.read_bytes())
             self.assertEqual(TEMPLATE_SPECS.read_bytes(), installed_specs.read_bytes())
             self.assertEqual(TEMPLATE_PLANNER.read_bytes(), installed_planner.read_bytes())
-            self.assertIn("scout-plan", (target / "justfile").read_text())
-            self.assertIn("specs *ARGS", (target / "justfile").read_text())
+            installed_justfile = (target / "justfile").read_text()
+            self.assertIn("scout-plan", installed_justfile)
+            self.assertIn("specs *ARGS", installed_justfile)
+            self.assertIn(".agents/skills/sssf/apps/visualizer", installed_justfile)
 
             installed.write_text("local customization\n")
             self.run_installer(target)

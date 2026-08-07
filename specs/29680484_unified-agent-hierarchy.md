@@ -14,8 +14,8 @@ The SQLite producer schema remains a valid persistence implementation: `agent_se
 
 Files:
 
-- `.claude/skills/sssf/apps/visualizer/shared/types.ts`
-- `.claude/skills/sssf/apps/visualizer/src/lib/types.ts`
+- `.agents/skills/sssf/apps/visualizer/shared/types.ts`
+- `.agents/skills/sssf/apps/visualizer/src/lib/types.ts`
 
 Changes:
 
@@ -31,10 +31,10 @@ Changes:
 
 Files:
 
-- `.claude/skills/sssf/apps/visualizer/server/db.ts`
-- `.claude/skills/sssf/apps/visualizer/server/app.ts`
-- `.claude/skills/sssf/apps/visualizer/server/db.test.ts`
-- `.claude/skills/sssf/apps/visualizer/server/app.test.ts`
+- `.agents/skills/sssf/apps/visualizer/server/db.ts`
+- `.agents/skills/sssf/apps/visualizer/server/app.ts`
+- `.agents/skills/sssf/apps/visualizer/server/db.test.ts`
+- `.agents/skills/sssf/apps/visualizer/server/app.test.ts`
 
 Changes:
 
@@ -58,11 +58,11 @@ Changes:
 
 Files:
 
-- `.claude/skills/sssf/apps/visualizer/src/lib/api.ts`
-- new `.claude/skills/sssf/apps/visualizer/src/lib/agents.ts`
-- new `.claude/skills/sssf/apps/visualizer/src/lib/agents.test.ts`
-- remove `.claude/skills/sssf/apps/visualizer/src/lib/subagents.ts`
-- remove `.claude/skills/sssf/apps/visualizer/src/lib/subagents.test.ts`
+- `.agents/skills/sssf/apps/visualizer/src/lib/api.ts`
+- new `.agents/skills/sssf/apps/visualizer/src/lib/agents.ts`
+- new `.agents/skills/sssf/apps/visualizer/src/lib/agents.test.ts`
+- remove `.agents/skills/sssf/apps/visualizer/src/lib/subagents.ts`
+- remove `.agents/skills/sssf/apps/visualizer/src/lib/subagents.test.ts`
 
 Changes:
 
@@ -76,13 +76,13 @@ Changes:
 
 Files:
 
-- `.claude/skills/sssf/apps/visualizer/src/components/SessionTrace.vue`
-- rename/refactor `.claude/skills/sssf/apps/visualizer/src/components/PhaseDetail.vue` to `.claude/skills/sssf/apps/visualizer/src/components/AgentDetail.vue`
-- remove `.claude/skills/sssf/apps/visualizer/src/components/SubagentInspector.vue`
-- `.claude/skills/sssf/apps/visualizer/src/components/StatusChip.vue`
-- `.claude/skills/sssf/apps/visualizer/src/lib/router.ts`
-- `.claude/skills/sssf/apps/visualizer/src/App.vue`
-- `.claude/skills/sssf/apps/visualizer/src/style.css` only for genuinely shared detail/tool styles
+- `.agents/skills/sssf/apps/visualizer/src/components/SessionTrace.vue`
+- rename/refactor `.agents/skills/sssf/apps/visualizer/src/components/PhaseDetail.vue` to `.agents/skills/sssf/apps/visualizer/src/components/AgentDetail.vue`
+- remove `.agents/skills/sssf/apps/visualizer/src/components/SubagentInspector.vue`
+- `.agents/skills/sssf/apps/visualizer/src/components/StatusChip.vue`
+- `.agents/skills/sssf/apps/visualizer/src/lib/router.ts`
+- `.agents/skills/sssf/apps/visualizer/src/App.vue`
+- `.agents/skills/sssf/apps/visualizer/src/style.css` only for genuinely shared detail/tool styles
 
 Changes:
 
@@ -112,14 +112,14 @@ Changes:
 
 Files:
 
-- `.claude/skills/sssf/references/observability.md`
+- `.agents/skills/sssf/references/observability.md`
 - `README.md`
 
 Update the visualizer/read-API wording to distinguish the deliberately separate storage tables from the unified agent read model. Document the generic agent detail/activity routes, hierarchy semantics, and unchanged configured card projection. Remove claims that the UI exposes a separate nested inspector. Retain all raw-file, telemetry, process, loopback-only, no-auth, and no-CORS statements.
 
 ## Verification
 
-From `.claude/skills/sssf/apps/visualizer/`, judge every command by exit status:
+From `.agents/skills/sssf/apps/visualizer/`, judge every command by exit status:
 
 1. Focused tests while iterating:
    - `bun test server/db.test.ts server/app.test.ts src/lib/agents.test.ts`

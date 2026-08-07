@@ -235,7 +235,7 @@ class PlannerArtifactTests(unittest.TestCase):
             for path in sorted((REPO_ROOT / "specs").glob("*.md"))
         }
         self.assertEqual("complete", statuses["b34b429b_observability-ui-hardening.md"])
-        self.assertEqual("planned", statuses["ee96e7f3_delete-archived-sessions.md"])
+        self.assertEqual("complete", statuses["ee96e7f3_delete-archived-sessions.md"])
         self.assertIn(statuses["ffed9f91_spec-lifecycle-scout-plan.md"], specs.VALID_STATUSES)
 
 

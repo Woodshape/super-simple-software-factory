@@ -28,8 +28,8 @@ Use a file-backed producer seam rather than letting the extension open SQLite. T
 
 Files:
 
-- `.claude/skills/sssf/templates/harness_engineering/subagents.ts`
-- new `.claude/skills/sssf/templates/harness_engineering/subagent_observability.ts`
+- `.agents/skills/sssf/templates/harness_engineering/subagents.ts`
+- new `.agents/skills/sssf/templates/harness_engineering/subagent_observability.ts`
 
 Changes:
 
@@ -49,12 +49,12 @@ Changes:
 
 Files:
 
-- `.claude/skills/sssf/templates/adws/adw_modules/data_types.py`
-- `.claude/skills/sssf/templates/adws/adw_modules/agents.py`
-- `.claude/skills/sssf/templates/adws/adw_modules/agent_pi.py`
-- new `.claude/skills/sssf/templates/adws/adw_modules/subagent_observability.py`
-- `.claude/skills/sssf/templates/adws/adw_modules/tracer.py`
-- `.claude/skills/sssf/templates/adws/adw_modules/session.py` or `.claude/skills/sssf/templates/adws/adw_modules/runner.py` only for terminal-state reconciliation if that cannot remain inside `Tracer.session_finish`
+- `.agents/skills/sssf/templates/adws/adw_modules/data_types.py`
+- `.agents/skills/sssf/templates/adws/adw_modules/agents.py`
+- `.agents/skills/sssf/templates/adws/adw_modules/agent_pi.py`
+- new `.agents/skills/sssf/templates/adws/adw_modules/subagent_observability.py`
+- `.agents/skills/sssf/templates/adws/adw_modules/tracer.py`
+- `.agents/skills/sssf/templates/adws/adw_modules/session.py` or `.agents/skills/sssf/templates/adws/adw_modules/runner.py` only for terminal-state reconciliation if that cannot remain inside `Tracer.session_finish`
 
 Changes:
 
@@ -69,10 +69,10 @@ Changes:
 
 Files:
 
-- `.claude/skills/sssf/apps/visualizer/shared/types.ts`
-- `.claude/skills/sssf/apps/visualizer/server/db.ts`
-- `.claude/skills/sssf/apps/visualizer/server/index.ts`
-- new `.claude/skills/sssf/apps/visualizer/server/app.ts` (or an equivalently named route factory used by both `index.ts` and route tests)
+- `.agents/skills/sssf/apps/visualizer/shared/types.ts`
+- `.agents/skills/sssf/apps/visualizer/server/db.ts`
+- `.agents/skills/sssf/apps/visualizer/server/index.ts`
+- new `.agents/skills/sssf/apps/visualizer/server/app.ts` (or an equivalently named route factory used by both `index.ts` and route tests)
 
 Changes:
 
@@ -93,15 +93,15 @@ Changes:
 
 Files:
 
-- `.claude/skills/sssf/apps/visualizer/src/lib/types.ts`
-- `.claude/skills/sssf/apps/visualizer/src/lib/api.ts`
-- `.claude/skills/sssf/apps/visualizer/src/lib/events.ts`
-- new `.claude/skills/sssf/apps/visualizer/src/lib/subagents.ts`
-- `.claude/skills/sssf/apps/visualizer/src/components/SessionTrace.vue`
-- `.claude/skills/sssf/apps/visualizer/src/components/PhaseDetail.vue`
-- new `.claude/skills/sssf/apps/visualizer/src/components/SubagentInspector.vue`
-- `.claude/skills/sssf/apps/visualizer/src/components/StatusChip.vue` if nested error/cancelled statuses need explicit icons/styles
-- `.claude/skills/sssf/apps/visualizer/src/style.css` only for shared responsive styles that do not belong in the new scoped component
+- `.agents/skills/sssf/apps/visualizer/src/lib/types.ts`
+- `.agents/skills/sssf/apps/visualizer/src/lib/api.ts`
+- `.agents/skills/sssf/apps/visualizer/src/lib/events.ts`
+- new `.agents/skills/sssf/apps/visualizer/src/lib/subagents.ts`
+- `.agents/skills/sssf/apps/visualizer/src/components/SessionTrace.vue`
+- `.agents/skills/sssf/apps/visualizer/src/components/PhaseDetail.vue`
+- new `.agents/skills/sssf/apps/visualizer/src/components/SubagentInspector.vue`
+- `.agents/skills/sssf/apps/visualizer/src/components/StatusChip.vue` if nested error/cancelled statuses need explicit icons/styles
+- `.agents/skills/sssf/apps/visualizer/src/style.css` only for shared responsive styles that do not belong in the new scoped component
 
 Changes:
 
@@ -121,11 +121,11 @@ Changes:
 
 Files:
 
-- new `.claude/skills/sssf/templates/harness_engineering/subagent_observability.test.ts` or an app-local Bun test importing the pure helper
-- new `.claude/skills/sssf/templates/adws/tests/test_subagent_observability.py`
-- `.claude/skills/sssf/apps/visualizer/server/db.test.ts`
-- new `.claude/skills/sssf/apps/visualizer/server/app.test.ts`
-- new `.claude/skills/sssf/apps/visualizer/src/lib/subagents.test.ts`
+- new `.agents/skills/sssf/templates/harness_engineering/subagent_observability.test.ts` or an app-local Bun test importing the pure helper
+- new `.agents/skills/sssf/templates/adws/tests/test_subagent_observability.py`
+- `.agents/skills/sssf/apps/visualizer/server/db.test.ts`
+- new `.agents/skills/sssf/apps/visualizer/server/app.test.ts`
+- new `.agents/skills/sssf/apps/visualizer/src/lib/subagents.test.ts`
 
 Coverage:
 
@@ -139,10 +139,10 @@ Coverage:
 
 Files:
 
-- `.claude/skills/sssf/references/observability.md`
-- `.claude/skills/sssf/cookbooks/install.md`
-- `.claude/skills/sssf/cookbooks/sssf_overview.md`
-- `.claude/skills/sssf/cookbooks/update_modules.md`
+- `.agents/skills/sssf/references/observability.md`
+- `.agents/skills/sssf/cookbooks/install.md`
+- `.agents/skills/sssf/cookbooks/sssf_overview.md`
+- `.agents/skills/sssf/cookbooks/update_modules.md`
 - `README.md`
 
 Changes:
@@ -154,13 +154,13 @@ Changes:
 
 ## Verification
 
-1. Run the Python/template-focused tests with the dependencies declared by the templates (for example `uv run --with pytest --with pydantic --with pyyaml --with python-dotenv --with rich pytest .claude/skills/sssf/templates/adws/tests`). Judge only the command exit status.
-2. From `.claude/skills/sssf/apps/visualizer/`, run in order:
+1. Run the Python/template-focused tests with the dependencies declared by the templates (for example `uv run --with pytest --with pydantic --with pyyaml --with python-dotenv --with rich pytest .agents/skills/sssf/templates/adws/tests`). Judge only the command exit status.
+2. From `.agents/skills/sssf/apps/visualizer/`, run in order:
    - `bun test`
    - `bun run typecheck`
    - `bun run lint`
    - `bun run build`
-3. Create a temporary git repository, run `.claude/skills/sssf/scripts/install.py` into it, and execute a real configured planner/scout prompt that creates two nested children concurrently, waits for both, then continues one child for a second turn. Do not copy the template changes into this repository's existing stamped `adws/` tree.
+3. Create a temporary git repository, run `.agents/skills/sssf/scripts/install.py` into it, and execute a real configured planner/scout prompt that creates two nested children concurrently, waits for both, then continues one child for a second turn. Do not copy the template changes into this repository's existing stamped `adws/` tree.
 4. While that parent is live, query the temporary target's `sssf.db` and the three HTTP endpoints. Confirm both stable child ids appear under the correct configured parent/phase; PIDs/statuses and tool counts update live; child tools have arguments/results/timing; and continuation turn 2 preserves turn 1 and the Pi session identity.
 5. After completion and after restarting the visualizer, confirm the same historical records, full per-turn results, durations, and activity remain available, no process/child is falsely running, and raw child files are under the temporary target's session directory.
 6. Open the built UI against that database and inspect both children during and after the run. Confirm every required field is visible and that configured-agent cards, lanes, phase detail, prompts, costs, envelopes, gates, and archive behavior render as before. Also open an older database with no nested tables and confirm it remains usable with an empty nested section.

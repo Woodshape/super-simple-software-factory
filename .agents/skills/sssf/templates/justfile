@@ -98,4 +98,4 @@ procs ADW_ID:
 
 # boot the lifecycle-managed trace UI on 127.0.0.1:4601 (api on :4600)
 obs:
-    cd .claude/skills/sssf/apps/visualizer && bun install && bun run dev:all --db "{{justfile_directory()}}/{{db}}"
+    cd .agents/skills/sssf/apps/visualizer && bun install && bun run dev:all --db "{{justfile_directory()}}/{{db}}"

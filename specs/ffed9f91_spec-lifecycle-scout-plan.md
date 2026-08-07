@@ -52,11 +52,11 @@ Do not add `adw_id`, dates, owner, schema version, evidence, or other metadata. 
 
 **Source and stamped files:**
 
-- `.claude/skills/sssf/templates/adws/adw_modules/specs.py` (new)
+- `.agents/skills/sssf/templates/adws/adw_modules/specs.py` (new)
 - `adws/adw_modules/specs.py` (new, byte-for-byte stamped copy)
-- `.claude/skills/sssf/templates/adws/adw_modules/gates.py`
+- `.agents/skills/sssf/templates/adws/adw_modules/gates.py`
 - `adws/adw_modules/gates.py`
-- `.claude/skills/sssf/templates/justfile`
+- `.agents/skills/sssf/templates/justfile`
 - `justfile`
 
 Implement `adw_modules/specs.py` as the single deep module for parsing, locating, listing, and writing lifecycle state. Give it a small callable interface usable by gates and ADWs, plus a `__main__` CLI used by the justfile. It may use PyYAML, already present in every ADW's script dependencies; if the module is directly executable, give its CLI a PEP 723 dependency header so `just specs` works in a clean stamped repository.
@@ -92,18 +92,18 @@ This command is also the engineer-owned transition path for a standalone build w
 
 **Planner prompt source/stamped pair:**
 
-- `.claude/skills/sssf/templates/prompt_engineering/planner/user.md`
+- `.agents/skills/sssf/templates/prompt_engineering/planner/user.md`
 - `adws/adw_data/prompt_engineering/planner/user.md`
 
 Update the planner task to require canonical `status: planned` frontmatter as the first bytes of `context_handoff/plan.md`, then preserve it by using the existing one-call `cp` into the unique `specs/` path. State that both files must be identical and that plan-only success leaves them `planned`. Do not change `PlanOutput`; its existing two `artifacts` paths are sufficient.
 
 Add `gates.plan_spec_valid` after `artifacts_exist` and `files_non_empty` at every source and stamped `PlanOutput` call site:
 
-- `.claude/skills/sssf/templates/adws/adw_plan.py` and `adws/adw_plan.py`
-- `.claude/skills/sssf/templates/adws/adw_plan_build.py` and `adws/adw_plan_build.py`
-- `.claude/skills/sssf/templates/adws/adw_plan_build_test.py` and `adws/adw_plan_build_test.py`
-- `.claude/skills/sssf/templates/adws/adw_plan_build_test_quality.py` and `adws/adw_plan_build_test_quality.py`
-- `.claude/skills/sssf/templates/adws/adw_simple_sdlc.py` and `adws/adw_simple_sdlc.py`
+- `.agents/skills/sssf/templates/adws/adw_plan.py` and `adws/adw_plan.py`
+- `.agents/skills/sssf/templates/adws/adw_plan_build.py` and `adws/adw_plan_build.py`
+- `.agents/skills/sssf/templates/adws/adw_plan_build_test.py` and `adws/adw_plan_build_test.py`
+- `.agents/skills/sssf/templates/adws/adw_plan_build_test_quality.py` and `adws/adw_plan_build_test_quality.py`
+- `.agents/skills/sssf/templates/adws/adw_simple_sdlc.py` and `adws/adw_simple_sdlc.py`
 - the new `adw_scout_plan.py` pair from step 4
 
 Use visible `kind="code"`, `owner="specs"` phases that call the shared module; do not bury writes in an agent phase:
@@ -131,7 +131,7 @@ Do not assign status from commit/session names alone. Perform and record the fol
 
 1. **Observability hardening candidate for `complete`:**
    - Confirm `git show --stat --oneline 2f24b8b` contains the spec and the implementation/test/docs files named by it; this correlation is necessary but not sufficient.
-   - From `.claude/skills/sssf/apps/visualizer`, run `bun install --frozen-lockfile`, `bun test`, `bun run typecheck`, `bun run lint`, and `bun run build`, judging each by exit status.
+   - From `.agents/skills/sssf/apps/visualizer`, run `bun install --frozen-lockfile`, `bun test`, `bun run typecheck`, `bun run lint`, and `bun run build`, judging each by exit status.
    - Re-run the original acceptance smoke evidence against a disposable database: active/archived list and restore behavior, bounded list timeline with lossless detail paging, loopback-only 4600/4601 startup, occupied-port failures, API-health-before-UI startup, and cleanup after `SIGINT`, `SIGTERM`, and either child exiting. Confirm source/stamped justfile behavior remains correct.
    - Only if all required evidence passes, prepend `status: complete`. If any evidence fails, do not guess another state or make the validator green cosmetically; fix/accept the outstanding work before migration.
 2. **Archived-session deletion candidate for `planned`:**
@@ -147,7 +147,7 @@ This plan and its handoff copy begin `planned` as required. Once the new writer 
 
 **New source/stamped workflow:**
 
-- `.claude/skills/sssf/templates/adws/adw_scout_plan.py`
+- `.agents/skills/sssf/templates/adws/adw_scout_plan.py`
 - `adws/adw_scout_plan.py`
 
 Model it directly on `adw_scout.py`, `adw_plan.py`, and the existing `previous=` chaining pattern:
@@ -173,15 +173,15 @@ Do not add it to `demo`; the demo intentionally remains two cheap read-only call
 
 **Installer behavior and docs:**
 
-- `.claude/skills/sssf/scripts/install.py`
+- `.agents/skills/sssf/scripts/install.py`
 - `README.md`
-- `.claude/skills/sssf/SKILL.md`
-- `.claude/skills/sssf/cookbooks/sssf_overview.md`
-- `.claude/skills/sssf/cookbooks/how_to_prompt_for_the_eng.md`
-- `.claude/skills/sssf/cookbooks/run_adw.md`
-- `.claude/skills/sssf/cookbooks/create_adw.md`
-- `.claude/skills/sssf/cookbooks/install.md`
-- `.claude/skills/sssf/references/handoff.md`
+- `.agents/skills/sssf/SKILL.md`
+- `.agents/skills/sssf/cookbooks/sssf_overview.md`
+- `.agents/skills/sssf/cookbooks/how_to_prompt_for_the_eng.md`
+- `.agents/skills/sssf/cookbooks/run_adw.md`
+- `.agents/skills/sssf/cookbooks/create_adw.md`
+- `.agents/skills/sssf/cookbooks/install.md`
+- `.agents/skills/sssf/references/handoff.md`
 
 Do not change the installer algorithm or add another copy list. The existing recursive `templates/adws -> adws` stamp automatically includes `adw_scout_plan.py` and `adw_modules/specs.py`; the existing justfile and prompt-template stamps cover their other source files. A normal rerun installs a destination file that is absent and skips an existing one; `--force` refreshes existing stamped copies and retains its existing warning that user-owned config/prompts/justfile are overwritten. Update the install script's stale descriptive agent count from four to five while touching its documentation only.
 
@@ -202,9 +202,9 @@ Keep source and stamped copies synchronized in this repository. The source templ
 
 **Tests:**
 
-- `.claude/skills/sssf/tests/test_specs.py` (new)
-- `.claude/skills/sssf/tests/test_scout_plan.py` (new)
-- `.claude/skills/sssf/tests/test_install.py` (new)
+- `.agents/skills/sssf/tests/test_specs.py` (new)
+- `.agents/skills/sssf/tests/test_scout_plan.py` (new)
+- `.agents/skills/sssf/tests/test_install.py` (new)
 
 Use the repository's existing `unittest` style and subprocess exit statuses.
 
@@ -238,7 +238,7 @@ Parse both justfiles with `just --list`; assert `scout-plan` and `specs` are vis
 Run the complete static suite with:
 
 ```bash
-uv run --with pyyaml python -m unittest discover -s .claude/skills/sssf/tests -p 'test_*.py'
+uv run --with pyyaml python -m unittest discover -s .agents/skills/sssf/tests -p 'test_*.py'
 just --list
 just --dry-run scout-plan "map auth before planning"
 just specs

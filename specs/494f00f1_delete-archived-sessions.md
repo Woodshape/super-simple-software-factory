@@ -10,17 +10,17 @@ Add a confirmed, irreversible Delete action to archived session cards. The serve
 
 ## Current repository findings
 
-- API routes are defined by `createApiRoutes` in `.claude/skills/sssf/apps/visualizer/server/app.ts`; `server/index.ts` only binds the route map and static host. The existing `/api/sessions/:adw_id` handler therefore needs to become a GET/DELETE method map in `app.ts`, not in `index.ts` as the source spec anticipated.
+- API routes are defined by `createApiRoutes` in `.agents/skills/sssf/apps/visualizer/server/app.ts`; `server/index.ts` only binds the route map and static host. The existing `/api/sessions/:adw_id` handler therefore needs to become a GET/DELETE method map in `app.ts`, not in `index.ts` as the source spec anticipated.
 - `SssfDb` has a readonly query connection and a lazy writable connection currently described as archive-only. It derives `sessionsDir` as `{dirname(sssf.db)}/sessions` and already probes optional legacy columns/tables.
 - The source spec predates nested-agent persistence and names seven tables. The current tracer schema has ten session-owned tables: the seven core tables (`sessions`, `phases`, `events`, `envelopes`, `gate_results`, `processes`, `agent_sessions`) plus `subagents`, `subagent_turns`, and `subagent_activities`. To satisfy “every SQLite row owned by the selected `adw_id`,” deletion must include all ten when present while still tolerating legacy databases without the optional nested tables.
 - `SessionsList.vue` owns both list polls and optimistic archive/restore movement. `SessionCard.vue` is an anchor with one Archive/Restore button that already suppresses card navigation. There is no pending-action state or component test harness.
-- Baseline checks pass from `.claude/skills/sssf/apps/visualizer`: `bun test` (20 tests), `bun run typecheck`, `bun run lint` (one existing warning in `src/lib/models.ts`), and `bun run build`.
+- Baseline checks pass from `.agents/skills/sssf/apps/visualizer`: `bun test` (20 tests), `bun run typecheck`, `bun run lint` (one existing warning in `src/lib/models.ts`), and `bun run build`.
 
 ## Implementation plan
 
 ### 1. Add a guarded database/filesystem deletion operation
 
-**File:** `.claude/skills/sssf/apps/visualizer/server/db.ts`
+**File:** `.agents/skills/sssf/apps/visualizer/server/db.ts`
 
 1. Replace archive-only writer comments with a description of the two explicit human mutations, and factor lazy writer initialization so archive and delete share the same writable SQLite connection and `busy_timeout`/WAL-compatible settings.
 2. Add an exported deletion result contract that distinguishes at least `deleted`, `not_found`, `not_archived`, and legacy/unsupported archive state. This lets the route return stable status codes without parsing exceptions.
@@ -33,8 +33,8 @@ Add a confirmed, irreversible Delete action to archived session cards. The serve
 ### 2. Expose `DELETE /api/sessions/:adw_id`
 
 **Files:**
-- `.claude/skills/sssf/apps/visualizer/server/app.ts`
-- `.claude/skills/sssf/apps/visualizer/server/app.test.ts`
+- `.agents/skills/sssf/apps/visualizer/server/app.ts`
+- `.agents/skills/sssf/apps/visualizer/server/app.test.ts`
 
 1. Convert the current `/api/sessions/:adw_id` entry to a Bun method map. Preserve its GET validation/detail/404 behavior verbatim and add DELETE beside it.
 2. Decode and validate `adw_id` with the existing safe-segment rule before invoking the database method. Return:
@@ -48,10 +48,10 @@ Add a confirmed, irreversible Delete action to archived session cards. The serve
 ### 3. Add the client API and confirmed archived-card action
 
 **Files:**
-- `.claude/skills/sssf/apps/visualizer/src/lib/api.ts`
-- `.claude/skills/sssf/apps/visualizer/src/components/SessionsList.vue`
-- `.claude/skills/sssf/apps/visualizer/src/components/SessionCard.vue`
-- `.claude/skills/sssf/apps/visualizer/shared/types.ts`
+- `.agents/skills/sssf/apps/visualizer/src/lib/api.ts`
+- `.agents/skills/sssf/apps/visualizer/src/components/SessionsList.vue`
+- `.agents/skills/sssf/apps/visualizer/src/components/SessionCard.vue`
+- `.agents/skills/sssf/apps/visualizer/shared/types.ts`
 
 1. Add a typed deletion acknowledgement if useful to the shared API contracts, and implement `deleteSession(adwId)` using encoded `DELETE /api/sessions/:adw_id`. On failure, parse `{ error }` when available and fall back to method/URL/status so backend refusals are understandable in `actionError`.
 2. Change `SessionCard` to expose separate archive/restore and delete events. Keep active cards unchanged with only Archive; archived cards get Restore plus a visually destructive Delete button in a compact action group.
@@ -62,7 +62,7 @@ Add a confirmed, irreversible Delete action to archived session cards. The serve
 
 ### 4. Cover transactional deletion and isolation
 
-**File:** `.claude/skills/sssf/apps/visualizer/server/db.test.ts`
+**File:** `.agents/skills/sssf/apps/visualizer/server/db.test.ts`
 
 1. Expand or add a full temporary WAL fixture containing all ten current production tables, including the nested-agent tables, and create sibling `sessions/{adw_id}` trees with nested files. Seed an archived target and at least one control session with rows in every table.
 2. Test successful deletion: every table has zero target rows, the exact raw directory is recursively gone, and every control row/file remains unchanged. Include similarly prefixed IDs to guard against prefix-based deletion.
@@ -74,11 +74,11 @@ Add a confirmed, irreversible Delete action to archived session cards. The serve
 ### 5. Update documentation and stale read-only descriptions
 
 **Files:**
-- `.claude/skills/sssf/references/observability.md`
+- `.agents/skills/sssf/references/observability.md`
 - `README.md`
-- `.claude/skills/sssf/apps/visualizer/package.json`
-- comments in `.claude/skills/sssf/apps/visualizer/server/db.ts`
-- header/API comments in `.claude/skills/sssf/apps/visualizer/shared/types.ts`
+- `.agents/skills/sssf/apps/visualizer/package.json`
+- comments in `.agents/skills/sssf/apps/visualizer/server/db.ts`
+- header/API comments in `.agents/skills/sssf/apps/visualizer/shared/types.ts`
 
 1. Replace claims that the visualizer is wholly read-only or has exactly one write. State that normal observation remains readonly and polling-based, while archive/restore and confirmed permanent deletion are explicit human-triggered mutations on the separate writer connection.
 2. Document `DELETE /api/sessions/:adw_id`, the backend archived-only invariant, 200/400/404/409 behavior, path validation, missing-directory behavior, and recursive removal of `{dirname(sssf.db)}/sessions/{adw_id}`.
@@ -88,7 +88,7 @@ Add a confirmed, irreversible Delete action to archived session cards. The serve
 
 ## Verification
 
-From `.claude/skills/sssf/apps/visualizer`, run and require successful exit status from:
+From `.agents/skills/sssf/apps/visualizer`, run and require successful exit status from:
 
 ```bash
 bun test
