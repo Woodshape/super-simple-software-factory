@@ -12,7 +12,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, renameSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import type {
   AgentActivitiesPage,
   AgentActivity,
@@ -95,8 +95,16 @@ export function resolveDbPath(argv: string[] = Bun.argv): string {
   return isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
 }
 
+/** Repository basename for the canonical `<repo>/adws/adw_data/sssf.db` layout. */
+export function workspaceNameFromDbPath(path: string): string {
+  const dataDir = dirname(resolve(path));
+  return basename(dirname(dirname(dataDir)));
+}
+
 export class SssfDb {
   readonly path: string;
+  /** Public-safe identity for the repository that owns this database. */
+  readonly workspace: string;
   /**
    * Where the ADW session dirs live: `{data_dir}/sessions/{adw_id}/{agent}/`.
    * The db sits in the same data_dir (config's `observability.db` defaults to
@@ -121,6 +129,7 @@ export class SssfDb {
       );
     }
     this.path = path;
+    this.workspace = workspaceNameFromDbPath(path);
     this.sessionsDir = resolve(dirname(path), "sessions");
     this.db = new Database(path, { readonly: true });
 

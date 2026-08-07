@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createApiRoutes } from "./app.ts";
 import { SssfDb } from "./db.ts";
 
@@ -12,7 +12,8 @@ afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, f
 function fixture(nested = true, withArchived = true) {
   const dir = mkdtempSync(join(tmpdir(), "sssf-routes-"));
   dirs.push(dir);
-  const path = join(dir, "sssf.db");
+  const path = join(dir, "kios-mvp", "adws", "adw_data", "sssf.db");
+  mkdirSync(dirname(path), { recursive: true });
   const setup = new Database(path);
   setup.exec(`
     PRAGMA journal_mode=WAL;
@@ -56,7 +57,7 @@ function fixture(nested = true, withArchived = true) {
   const request = (route: string, init?: RequestInit) =>
     fetch(`http://127.0.0.1:${server.port}${route}`, init);
   const get = (route: string) => request(route);
-  return { setup, db, server, get, request };
+  return { dir, path, setup, db, server, get, request };
 }
 
 async function close(f: ReturnType<typeof fixture>) {
@@ -64,6 +65,27 @@ async function close(f: ReturnType<typeof fixture>) {
   f.db.close();
   f.setup.close();
 }
+
+describe("health HTTP contract", () => {
+  test("returns only the target repository basename as its workspace identity", async () => {
+    const f = fixture();
+    try {
+      const response = await f.get("/api/health");
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      const body = JSON.parse(text) as Record<string, unknown>;
+      expect(body).toEqual({
+        ok: true,
+        workspace: "kios-mvp",
+        journal_mode: "wal",
+        sessions: 2,
+      });
+      expect(Object.hasOwn(body, "db")).toBe(false);
+      expect(text).not.toContain(f.path);
+      expect(text).not.toContain(f.dir);
+    } finally { await close(f); }
+  });
+});
 
 describe("session deletion HTTP contract", () => {
   test("preserves GET and maps active, success, repeated, and unsafe deletion", async () => {

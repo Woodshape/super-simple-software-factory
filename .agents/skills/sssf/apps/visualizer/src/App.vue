@@ -1,36 +1,58 @@
 <script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { fetchHealth } from './lib/api'
 import { useRoute, hrefFor, agentCrumb } from './lib/router'
 import SessionsList from './components/SessionsList.vue'
 import SessionTrace from './components/SessionTrace.vue'
 
 const route = useRoute()
+const workspaceName = ref('loading…')
+
+onMounted(() => {
+  void fetchHealth().then(
+    (health) => {
+      workspaceName.value = health.workspace.trim() || 'unavailable'
+    },
+    () => {
+      workspaceName.value = 'unavailable'
+    },
+  )
+})
 </script>
 
 <template>
   <div class="app">
     <header class="topbar">
-      <nav class="crumbs">
-        <!-- Inline copy of public/logo.svg (the favicon) so the mark renders
-             crisply with no fetch; keep the two in sync. -->
-        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
-          <rect x="4" y="6" width="17" height="5" rx="2.5" fill="#e8b64a" />
-          <rect x="8" y="13.5" width="20" height="5" rx="2.5" fill="#c89bff" />
-          <rect x="4" y="21" width="13" height="5" rx="2.5" fill="#5ad2dd" />
-        </svg>
-        <span class="brand">Super Simple Software Factory</span>
-        <span class="sep">›</span>
-        <a :href="hrefFor()" :class="{ current: !route.adwId }">sessions</a>
-        <template v-if="route.adwId">
+      <div class="topbar-main">
+        <div class="brand-lockup">
+          <!-- Inline copy of public/logo.svg (the favicon) so the mark renders
+               crisply with no fetch; keep the two in sync. -->
+          <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+            <rect x="4" y="6" width="17" height="5" rx="2.5" fill="#e8b64a" />
+            <rect x="8" y="13.5" width="20" height="5" rx="2.5" fill="#c89bff" />
+            <rect x="4" y="21" width="13" height="5" rx="2.5" fill="#5ad2dd" />
+          </svg>
+          <span class="brand">Super Simple Software Factory</span>
+        </div>
+        <div class="workspace-identity" aria-label="Target workspace" aria-live="polite">
+          <span class="workspace-label">workspace</span>
+          <strong class="workspace-name">{{ workspaceName }}</strong>
+        </div>
+        <nav class="crumbs" aria-label="Session breadcrumbs">
           <span class="sep">›</span>
-          <a :href="hrefFor(route.adwId)" :class="{ current: !route.agentId }">{{
-            route.adwId
-          }}</a>
-        </template>
-        <template v-if="route.adwId && route.agentId">
-          <span class="sep">›</span>
-          <span class="current">{{ agentCrumb ?? route.agentId }}</span>
-        </template>
-      </nav>
+          <a :href="hrefFor()" :class="{ current: !route.adwId }">sessions</a>
+          <template v-if="route.adwId">
+            <span class="sep">›</span>
+            <a :href="hrefFor(route.adwId)" :class="{ current: !route.agentId }">{{
+              route.adwId
+            }}</a>
+          </template>
+          <template v-if="route.adwId && route.agentId">
+            <span class="sep">›</span>
+            <span class="current">{{ agentCrumb ?? route.agentId }}</span>
+          </template>
+        </nav>
+      </div>
       <span class="live-hint"><span class="live-dot" /> live</span>
     </header>
     <main>
@@ -45,7 +67,8 @@ const route = useRoute()
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 15px 28px;
+  gap: 18px;
+  padding: 12px 28px;
   background: rgba(11, 15, 24, 0.72);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
@@ -70,11 +93,20 @@ const route = useRoute()
   );
 }
 
-.crumbs {
+.topbar-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.brand-lockup {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 17px;
+  flex: none;
   min-width: 0;
 }
 
@@ -95,12 +127,58 @@ const route = useRoute()
   white-space: nowrap;
 }
 
+.workspace-identity {
+  display: grid;
+  width: clamp(150px, 20vw, 260px);
+  min-width: 0;
+  flex: none;
+  padding: 5px 11px 6px;
+  border: 1px solid rgba(90, 210, 221, 0.38);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(90, 210, 221, 0.13), rgba(200, 155, 255, 0.09));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  line-height: 1.1;
+}
+
+.workspace-label {
+  color: var(--faint);
+  font-size: 16px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workspace-name {
+  overflow: hidden;
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 17px;
+  white-space: nowrap;
+}
+
 .sep {
+  flex: none;
   color: var(--faint);
 }
 
 .crumbs a {
+  min-width: 0;
+  max-width: 240px;
+  overflow: hidden;
   color: var(--dim);
+  text-overflow: ellipsis;
 }
 
 .crumbs a:hover {
@@ -108,7 +186,11 @@ const route = useRoute()
 }
 
 .crumbs .current {
+  min-width: 0;
+  max-width: 320px;
+  overflow: hidden;
   color: var(--text);
+  text-overflow: ellipsis;
 }
 
 .live-hint {
@@ -127,5 +209,30 @@ const route = useRoute()
   background: var(--green);
   box-shadow: 0 0 10px rgba(74, 222, 128, 0.7);
   animation: pulse 1.6s ease-in-out infinite;
+}
+
+@media (max-width: 1000px) {
+  .brand {
+    display: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .topbar {
+    gap: 10px;
+    padding-inline: 14px;
+  }
+
+  .topbar-main {
+    gap: 10px;
+  }
+
+  .workspace-identity {
+    width: clamp(140px, 48vw, 210px);
+  }
+
+  .crumbs {
+    display: none;
+  }
 }
 </style>

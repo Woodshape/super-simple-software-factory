@@ -1,5 +1,5 @@
 ---
-status: planned
+status: complete
 ---
 
 # Show the target workspace in the visualizer header

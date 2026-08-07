@@ -48,7 +48,10 @@ function validAgentIds(req: Request): { adwId: string; agentId: string } | null 
 export function createApiRoutes(db: SssfDb) {
   return {
     "/api/health": safely(() => json({
-      ok: true, db: db.path, journal_mode: db.journalMode, sessions: db.sessionCount(),
+      ok: true,
+      workspace: db.workspace,
+      journal_mode: db.journalMode,
+      sessions: db.sessionCount(),
     } satisfies HealthResponse)),
     "/api/sessions": safely((req) => {
       const archived = new URL(req.url).searchParams.get("archived") ?? "0";

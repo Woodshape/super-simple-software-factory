@@ -196,9 +196,9 @@ WAL allows readers during writes. Writers are the tracers of running ADW process
 
 ## Visualizer lifecycle and exposure
 
-`just obs` is the supported launcher. It installs the visualizer dependencies, checks that the fixed ports are free, starts the API on `127.0.0.1:4600`, waits for `/api/health`, and only then starts Vite on `127.0.0.1:4601`. Neither listener is exposed beyond IPv4 loopback. A collision on either port fails startup instead of choosing another port; stopping the recipe or losing either child terminates and reaps both children.
+`just obs` is the supported launcher. It installs the visualizer dependencies, checks that the fixed ports are free, starts the API on `127.0.0.1:4600`, waits for `/api/health`, and only then starts Vite on `127.0.0.1:4601`. Neither listener is exposed beyond IPv4 loopback. A collision on either port fails startup instead of choosing another port; stopping the recipe or losing either child terminates and reaps both children. The health response identifies its target workspace using only the repository basename; it never exposes the selected database's absolute path.
 
-The stamped recipe passes the target repository's absolute db path to this lifecycle supervisor. `install.py` still stamps the template justfile only when absent unless `--force` is used.
+The stamped recipe passes the target repository's absolute db path to this lifecycle supervisor. That path remains server-side. `install.py` still stamps the template justfile only when absent unless `--force` is used.
 
 ## Polling contract
 

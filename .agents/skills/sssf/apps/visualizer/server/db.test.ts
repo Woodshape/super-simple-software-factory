@@ -3,7 +3,11 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { CARD_TIMELINE_MARKER_LIMIT, SssfDb } from "./db.ts";
+import {
+  CARD_TIMELINE_MARKER_LIMIT,
+  SssfDb,
+  workspaceNameFromDbPath,
+} from "./db.ts";
 
 const tempDirs: string[] = [];
 
@@ -140,6 +144,23 @@ function countOwned(setup: Database, table: string, adwId: string): number {
     .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM ${table} WHERE adw_id = ?`)
     .get(adwId)?.count ?? 0;
 }
+
+describe("workspace name derivation", () => {
+  test("returns the repository basename for the canonical database layout", () => {
+    expect(
+      workspaceNameFromDbPath("/root/claude/kios-mvp/adws/adw_data/sssf.db"),
+    ).toBe("kios-mvp");
+  });
+
+  test("normalizes the path and ignores parent directories above the repository", () => {
+    expect(
+      workspaceNameFromDbPath("/srv/builds/old/../catalog/adws/adw_data/./sssf.db"),
+    ).toBe("catalog");
+    expect(
+      workspaceNameFromDbPath("/different/mount/catalog/adws/adw_data/sssf.db"),
+    ).toBe("catalog");
+  });
+});
 
 describe("session archive projection", () => {
   test("filters active and archived rows and supports restore", () => {

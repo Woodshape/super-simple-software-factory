@@ -316,7 +316,8 @@ export type GatesResponse = GateResult[];
 /** GET /api/health */
 export interface HealthResponse {
   ok: boolean;
-  db: string;
+  /** Repository basename only; absolute repository and database paths stay server-side. */
+  workspace: string;
   journal_mode: string;
   sessions: number;
 }
