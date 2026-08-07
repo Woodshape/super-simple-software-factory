@@ -52,11 +52,11 @@ scout-plan *ARGS:
 plan *ARGS:
     uv run adws/adw_plan.py --config {{config}} "$@"
 
-# implement an existing plan/request: just build specs/<plan>.md --adw-id <id>
+# implement a plan/request in a new session; optionally append --adw-id <id> to join an existing one
 build *ARGS:
     uv run adws/adw_build.py --config {{config}} "$@"
 
-# implement an existing plan/request, then review it: just build-review specs/<plan>.md --adw-id <id>
+# implement and review in a new session; optionally append --adw-id <id> to join an existing one
 build-review *ARGS:
     uv run adws/adw_build_review.py --config {{config}} "$@"
 

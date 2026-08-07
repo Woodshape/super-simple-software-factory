@@ -4,6 +4,17 @@ The full `sssf.config.yaml` spec: every field, how defaults merge, and how model
 
 It lives at **`adws/adw_sssf_config/sssf.config.yaml`** — the default path every `adw_*.py` and the justfile resolve, and where `install.py` / `make_config.py` stamp it. Pass `--config <path>` to any ADW (or set `SSSF_CONFIG` for the justfile) to run against a different roster.
 
+## Self-maintenance roster
+
+The installer also stamps `adws/adw_sssf_config/sssf.maintenance.config.yaml`. Use it only for reviewed changes to SSSF's own protected runtime, templates, references, and tests:
+
+```bash
+SSSF_CONFIG=adws/adw_sssf_config/sssf.maintenance.config.yaml \
+  just build-review specs/<sssf-maintenance-spec>.md
+```
+
+Existing ADWs resolve the fixed role name `builder`, so the privileged entry deliberately keeps that name; the separate roster is the maintenance boundary. Its `writes` list is a narrow allowlist over SSSF-owned paths rather than a permanent weakening of the normal builder. It does not grant access to `adws/adw_sssf_config/` itself or to application code. Keep the default roster for all normal product work.
+
 ## Shape
 
 ```yaml

@@ -8,8 +8,8 @@ Usage:
     uv run <skill>/scripts/install.py [--force]
 
 Stamps: adws/ (modules + starter ADWs), adws/adw_data/prompt_engineering/
-(5 starter agents), adws/adw_sssf_config/sssf.config.yaml, .env.sample,
-.gitignore entries.
+(5 starter agents), the default and self-maintenance rosters under
+adws/adw_sssf_config/, .env.sample, .gitignore entries.
 Existing files are skipped unless --force.
 """
 
@@ -73,6 +73,9 @@ def main() -> int:
           root / "adws" / "adw_data" / "harness_engineering", args.force, stamped, skipped)
     stamp(TEMPLATES / "sssf.config.yaml",
           root / "adws" / "adw_sssf_config" / "sssf.config.yaml",
+          args.force, stamped, skipped)
+    stamp(TEMPLATES / "sssf.maintenance.config.yaml",
+          root / "adws" / "adw_sssf_config" / "sssf.maintenance.config.yaml",
           args.force, stamped, skipped)
     stamp(TEMPLATES / "env.sample", root / ".env.sample", args.force, stamped, skipped)
     # The recipes are part of the operating experience, and several cookbooks

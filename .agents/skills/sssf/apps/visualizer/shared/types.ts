@@ -418,6 +418,31 @@ export interface AgentActivitiesPage {
   has_more: boolean;
 }
 
+/** A visible Pi conversation role. `thinking` is reasoning text, not AgentTurn.thinking's level. */
+export type AgentMessageRole = "user" | "thinking" | "assistant";
+
+/** One complete text block from a final Pi message snapshot, in source order. */
+export interface AgentMessage {
+  /** Stable, one-based position in the normalized visible flow. */
+  cursor: number;
+  /** Opaque stable ID derived only from source order, never from a filesystem path. */
+  id: string;
+  role: AgentMessageRole;
+  /** The complete source string. It is never trimmed, summarized, or clipped. */
+  text: string;
+  timestamp?: string;
+  turn?: number;
+}
+
+/** GET /api/sessions/:adw_id/agents/:agent_id/messages */
+export interface AgentMessagesPage {
+  messages: AgentMessage[];
+  cursor: number;
+  has_more: boolean;
+  /** False when neither a raw stream nor a safe persistent Pi session exists. */
+  available: boolean;
+}
+
 export interface ApiError {
   error: string;
 }

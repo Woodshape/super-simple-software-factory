@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createApiRoutes } from "./app.ts";
@@ -52,6 +52,28 @@ function fixture(nested = true, withArchived = true) {
     INSERT INTO subagent_activities (telemetry_id,activity_id,subagent_id,adw_id,turn,tool,ok)
       VALUES ('one','one','child','run',1,'read',1),('two','two','child','run',1,'bash',1);
   `);
+  const sessionsDir = join(dirname(path), "sessions", "run");
+  const raw = (role: string, content: unknown[], timestamp: string) => JSON.stringify({
+    type: "message_end",
+    fixture_path: dir,
+    thinkingSignature: "http-secret-signature",
+    message: { role, content, timestamp },
+  });
+  mkdirSync(join(sessionsDir, "planner"), { recursive: true });
+  writeFileSync(join(sessionsDir, "planner", "raw_output.jsonl"), [
+    raw("user", [{ type: "text", text: "configured user" }], "2025-01-01T00:00:01Z"),
+    raw("assistant", [
+      { type: "thinking", thinking: "configured thinking", thinkingSignature: "block-signature" },
+      { type: "text", text: "configured answer" },
+    ], "2025-01-01T00:00:02Z"),
+  ].join("\n") + "\n");
+  if (nested) {
+    mkdirSync(join(sessionsDir, "planner", "subagents", "child", "turn-1"), { recursive: true });
+    writeFileSync(join(sessionsDir, "planner", "subagents", "child", "turn-1", "raw_output.jsonl"), [
+      raw("user", [{ type: "text", text: "nested user" }], "2025-01-01T00:00:01Z"),
+      raw("assistant", [{ type: "text", text: "nested answer" }], "2025-01-01T00:00:02Z"),
+    ].join("\n") + "\n");
+  }
   const db = new SssfDb(path);
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, routes: createApiRoutes(db) });
   const request = (route: string, init?: RequestInit) =>
@@ -160,6 +182,51 @@ describe("unified agent HTTP contracts", () => {
     } finally { await close(f); }
   });
 
+  test("serves the same safe, cursor-paged message contract for configured and nested agents", async () => {
+    const f = fixture();
+    try {
+      const configured = await f.get("/api/sessions/run/agents/phase/messages?after=0&limit=2");
+      expect(configured.status).toBe(200);
+      const first = await configured.json() as { messages: Array<{ role: string; text: string }>; cursor: number; has_more: boolean; available: boolean };
+      expect(first).toMatchObject({
+        available: true,
+        has_more: true,
+        messages: [
+          { role: "user", text: "configured user" },
+          { role: "thinking", text: "configured thinking" },
+        ],
+      });
+      const next = await f.get(`/api/sessions/run/agents/phase/messages?after=${first.cursor}&limit=2`);
+      expect(await next.json()).toMatchObject({
+        has_more: false,
+        messages: [{ role: "assistant", text: "configured answer" }],
+      });
+
+      const nested = await f.get("/api/sessions/run/agents/child/messages?after=0&limit=10");
+      expect(nested.status).toBe(200);
+      const text = await nested.text();
+      expect(JSON.parse(text)).toMatchObject({
+        available: true,
+        messages: [
+          { role: "user", text: "nested user", turn: 1 },
+          { role: "assistant", text: "nested answer", turn: 1 },
+        ],
+      });
+      expect(text).not.toContain(f.dir);
+      expect(text).not.toContain("signature");
+    } finally { await close(f); }
+  });
+
+  test("returns unavailable for a known legacy agent with no Pi files", async () => {
+    const f = fixture(false);
+    try {
+      rmSync(join(dirname(f.path), "sessions", "run", "planner", "raw_output.jsonl"));
+      const response = await f.get("/api/sessions/run/agents/phase/messages");
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ messages: [], cursor: 0, has_more: false, available: false });
+    } finally { await close(f); }
+  });
+
   test("validates paths and cursors and rejects ADW mismatches", async () => {
     const f = fixture();
     try {
@@ -168,6 +235,11 @@ describe("unified agent HTTP contracts", () => {
       expect((await f.get("/api/sessions/run/agents/child/activity?after=-1")).status).toBe(400);
       expect((await f.get("/api/sessions/run/agents/child/activity?limit=1001")).status).toBe(400);
       expect((await f.get("/api/sessions/run/agents/child/activity?after=999999999999999999999")).status).toBe(400);
+      expect((await f.get("/api/sessions/run/agents/bad%20id/messages")).status).toBe(400);
+      expect((await f.get("/api/sessions/run/agents/child/messages?after=-1")).status).toBe(400);
+      expect((await f.get("/api/sessions/run/agents/child/messages?limit=0")).status).toBe(400);
+      expect((await f.get("/api/sessions/run/agents/child/messages?limit=1001")).status).toBe(400);
+      expect((await f.get("/api/sessions/other/agents/child/messages")).status).toBe(404);
       expect((await f.get("/api/sessions/other/agents/child")).status).toBe(404);
       expect((await f.get("/api/sessions/missing")).status).toBe(404);
     } finally { await close(f); }

@@ -1,6 +1,7 @@
 import { join, resolve, sep } from "node:path";
 import type { AgentPrompts, ApiError, HealthResponse } from "../shared/types.ts";
 import type { SssfDb } from "./db.ts";
+import { loadAgentMessages } from "./messages.ts";
 
 export function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -121,6 +122,18 @@ export function createApiRoutes(db: SssfDb) {
       }
       const page = db.agentActivities(ids.adwId, ids.agentId, after, limit);
       return page ? json(page) : notFound(`no agent ${ids.agentId} in session ${ids.adwId}`);
+    }),
+    "/api/sessions/:adw_id/agents/:agent_id/messages": safely((req) => {
+      const ids = validAgentIds(req);
+      const after = queryInt(req, "after", 0);
+      const limit = queryInt(req, "limit", 200);
+      if (!ids || after === null || limit === null || limit < 1 || limit > 1000) {
+        return json({ error: "invalid path or cursor query" } satisfies ApiError, 400);
+      }
+      // Resolve through the scoped projection before touching any filesystem source.
+      const agent = db.agent(ids.adwId, ids.agentId);
+      if (!agent) return notFound(`no agent ${ids.agentId} in session ${ids.adwId}`);
+      return json(loadAgentMessages(db.sessionsDir, agent, after, limit));
     }),
     "/api/sessions/:adw_id/agents/:agent/prompts": safely(async (req) => {
       const adwId = param(req, "adw_id");

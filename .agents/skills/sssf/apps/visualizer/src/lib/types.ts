@@ -33,4 +33,7 @@ export type {
   AgentDetail,
   AgentActivity,
   AgentActivitiesPage,
+  AgentMessageRole,
+  AgentMessage,
+  AgentMessagesPage,
 } from '@shared/types'

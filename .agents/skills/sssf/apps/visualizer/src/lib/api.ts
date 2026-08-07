@@ -10,8 +10,10 @@ import type {
   SessionSummary,
   AgentActivitiesPage,
   AgentDetail,
+  AgentMessagesPage,
 } from './types'
 import { normalizeActivities, normalizeAgentDetail, normalizeAgents } from './agents'
+import { normalizeAgentMessagesPage } from './messages'
 
 async function getJson(url: string): Promise<unknown> {
   const res = await fetch(url)
@@ -121,6 +123,18 @@ export async function fetchAgent(adwId: string, agentId: string): Promise<AgentD
     `/api/sessions/${encodeURIComponent(adwId)}/agents/${encodeURIComponent(agentId)}`,
   )
   return normalizeAgentDetail(data)
+}
+
+export async function fetchAgentMessages(
+  adwId: string,
+  agentId: string,
+  after: number,
+  limit = 200,
+): Promise<AgentMessagesPage> {
+  const data = await getJson(
+    `/api/sessions/${encodeURIComponent(adwId)}/agents/${encodeURIComponent(agentId)}/messages?after=${after}&limit=${limit}`,
+  )
+  return normalizeAgentMessagesPage(data, after)
 }
 
 export async function fetchAgentActivity(
