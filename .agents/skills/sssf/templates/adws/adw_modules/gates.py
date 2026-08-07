@@ -97,12 +97,24 @@ def json_parses(envelope: EnvelopeBase, run) -> GateReport:
 
 
 def diff_matches_claims(envelope: EnvelopeBase, run) -> GateReport:
-    """Every file claimed changed must exist on disk."""
+    """Every claimed path must exist or be a tracked deletion in the Git diff."""
     report = GateReport()
+    diff = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD", "--"],
+        capture_output=True, text=True, check=False,
+    )
+    changed = ({Path(path).as_posix() for path in diff.stdout.splitlines()}
+               if diff.returncode == 0 else set())
     for f in getattr(envelope, "changed_files", []):
         p = Path(f)
-        report.check(f, p.exists(),
-                     f"exists, {_size(p)}" if p.exists() else "claimed changed file does not exist")
+        deleted = not p.exists() and p.as_posix() in changed
+        report.check(
+            f,
+            p.exists() or deleted,
+            f"exists, {_size(p)}" if p.exists()
+            else "changed, tracked file deleted" if deleted
+            else "claimed changed file does not exist",
+        )
     return report
 
 
@@ -136,7 +148,8 @@ def verdict_consistent(envelope: EnvelopeBase, run) -> GateReport:
 def tests_pass(command: str):
     """Gate factory: the given shell command must exit 0."""
     def gate(envelope: EnvelopeBase, run) -> GateReport:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True, check=False)
         ok = result.returncode == 0
         note = f"exit {result.returncode}"
         if not ok:

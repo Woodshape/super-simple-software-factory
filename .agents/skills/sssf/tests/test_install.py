@@ -35,6 +35,8 @@ class ScoutPlanInstallTests(unittest.TestCase):
             self.assertEqual(TEMPLATE_PLANNER.read_bytes(), installed_planner.read_bytes())
             installed_justfile = (target / "justfile").read_text()
             self.assertIn("scout-plan", installed_justfile)
+            self.assertIn("build *ARGS", installed_justfile)
+            self.assertIn("build-review *ARGS", installed_justfile)
             self.assertIn("specs *ARGS", installed_justfile)
             self.assertIn(".agents/skills/sssf/apps/visualizer", installed_justfile)
 

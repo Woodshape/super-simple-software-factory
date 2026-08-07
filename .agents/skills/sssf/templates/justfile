@@ -52,6 +52,14 @@ scout-plan *ARGS:
 plan *ARGS:
     uv run adws/adw_plan.py --config {{config}} "$@"
 
+# implement an existing plan/request: just build specs/<plan>.md --adw-id <id>
+build *ARGS:
+    uv run adws/adw_build.py --config {{config}} "$@"
+
+# implement an existing plan/request, then review it: just build-review specs/<plan>.md --adw-id <id>
+build-review *ARGS:
+    uv run adws/adw_build_review.py --config {{config}} "$@"
+
 # planner, builder, commit: just plan-build "add a /health endpoint"
 plan-build *ARGS:
     uv run adws/adw_plan_build.py --config {{config}} "$@"
