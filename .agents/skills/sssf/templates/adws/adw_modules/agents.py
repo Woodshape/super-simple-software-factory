@@ -204,10 +204,15 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
                                  context_window=context.context_window)
     run.save_agent_map(agent.name, {"session_id": session_id, "model": agent.model,
                                     "coding_agent": agent.coding_agent})
+    handoff = {"status": envelope.status,
+               "artifacts": envelope.artifacts,
+               "summary": envelope.summary}
+    blocker = getattr(envelope, "external_blocker", None)
+    if blocker is not None:
+        handoff["external_blocker"] = blocker.model_dump()
     run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
                                  type="handoff", name=agent.name,
-                                 payload={"artifacts": envelope.artifacts,
-                                          "summary": envelope.summary}))
+                                 payload=handoff))
     run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
                                  type="agent_end", name=agent.name,
                                  # Phase totals, not the last send's: a retried
@@ -218,7 +223,7 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
                                           "context_tokens": context.context_tokens,
                                           "context_window": context.context_window}))
     run.console.agent_finished(agent.name, spent.total_tokens, spent.total_cost)
-    if envelope.status != "success":
+    if envelope.status == "fail":
         raise RuntimeError(f"{agent.name} reported status={envelope.status!r}: {envelope.summary}")
     return envelope
 

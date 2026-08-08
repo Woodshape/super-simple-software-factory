@@ -17,7 +17,7 @@ Location comes from `observability.db` in `sssf.config.yaml`, default `adws/adw_
 | `phase_start` | a `run.phase(...)` block is entered |
 | `agent_start` | a coding agent is spawned or resumed for `ph.call(...)` |
 | `tool_call` | a tool (`read`, `bash`, `edit`, `write`) returns — **one event per real call**, named `bash: ls -la src`, payload `{tool, tool_call_id, args, result_snippet, ok, duration_ms, agent}` |
-| `handoff` | an envelope crosses from one agent to the next |
+| `handoff` | an envelope crosses from one agent to the next; payload includes its `status` and, for a blocked builder, the typed `external_blocker` |
 | `gate_pass` | a gate found no failed checks — payload carries `attempt`, `checks` (the evidence), and an empty `violations` |
 | `gate_fail` | a gate found at least one failed check — payload carries `attempt`, `checks`, and `violations` |
 | `log` | an explicit `ph.log(...)` from the ADW script |
@@ -52,7 +52,7 @@ sessions (
   adw_id        TEXT PRIMARY KEY,
   adw_name      TEXT,              -- ADW script(s) joined into the run
   request       TEXT,              -- the engineer's ask
-  status        TEXT,              -- running | success | fail
+  status        TEXT,              -- running | success | fail | blocked
   engineer      TEXT,
   started_at    TEXT, ended_at TEXT,
   total_tokens  INTEGER, total_cost REAL,
@@ -159,7 +159,7 @@ subagent_activities (              -- cursor-paged completed child tools
 );
 ```
 
-**A hung agent emits nothing**, which is exactly when you need its pid: no events, no tokens, no output to read. `processes` is the only table that can answer "what is this run running, and how do I stop it" — `just procs <adw_id>` lists what is live, `just kill <adw_id>` stops children before the parent, and both verify the recorded `command` still matches the pid before signalling it. SIGTERM and SIGINT are turned into `SystemExit` in `session.ensure`, so a catchable termination lands the session on `fail`. A harder termination can prevent Python from unwinding; when that ADW is later resumed, the next session finalization reconciles every leftover `running` phase to `fail` with an end time before publishing the terminal session status. The persisted invariant is therefore: a terminal session never contains a phase that still claims to be running.
+**A hung agent emits nothing**, which is exactly when you need its pid: no events, no tokens, no output to read. `processes` is the only table that can answer "what is this run running, and how do I stop it" — `just procs <adw_id>` lists what is live, `just kill <adw_id>` stops children before the parent, and both verify the recorded `command` still matches the pid before signalling it. SIGTERM and SIGINT are turned into `SystemExit` in `session.ensure`, so a catchable termination lands the session on `fail`. A harder termination can prevent Python from unwinding; when that ADW is later resumed, the next session finalization reconciles every leftover `running` phase to `fail` with an end time before publishing the terminal session status. The persisted invariant is therefore: every terminal session (`success`, `fail`, or `blocked`) has no running phase, configured/nested process, nested turn, or subagent.
 
 ### Nested Pi subagents
 
@@ -180,7 +180,15 @@ Lookups are ADW-scoped. Databases predating the optional nested storage tables s
 
 **Derived, never stored:** phase durations (`ended_at − started_at`), session phase-progress (query `phases` by `adw_id`), lane layout (`kind` + `owner`).
 
-Phase status invariants: `queued` only for manifest-declared phases not yet entered (dashed in the UI); `running` on enter; only a clean exit writes `success` — agent phases additionally need the envelope parsed and gates green; everything else resolves to `fail`.
+Phase status invariants: `queued` only for manifest-declared phases not yet entered (dashed in the UI); `running` on enter; only a clean exit writes `success` — agent phases additionally need the envelope parsed and gates green; everything else resolves to `fail`. Phases deliberately have no `blocked` status.
+
+### Externally blocked delivery
+
+A schema-valid blocked `BuildOutput` is successful agent execution, not an error. Its normal trace is `agent_start`, any tool calls, green claim gates, a valid attempt-1 envelope row, `handoff` with `status: blocked` plus the complete typed blocker, `agent_end`, and `phase_end {status: success}`. Session finalization then writes `sessions.status = blocked`. There is no invalid-envelope log, JSON retry, synthetic fail report, `error` event, or Python traceback. Gate or permission violations still take the ordinary fail path and may not be hidden by a blocker.
+
+The console renders the report and blocker line in yellow/neutral, keeps the phase's green success mark, and ends with a yellow `ADW blocked` panel showing `status blocked`, passed phases, and the normal trace hint. Exit codes are stable: `0` success, `1` failure or unmet acceptance, `2` externally blocked.
+
+`session_start()` for the same `adw_id` sets the aggregate session back to `running` and clears `ended_at` while retaining all historical phases, events, envelopes, gates, usage, and agent-session rows. Phase sequence numbers continue, and an unchanged agent/model resumes the same Pi session id. A fresh `Run` does not hydrate the old blocker as active state, so a later attempt can finish success. The spec lifecycle remains separately closed to `planned | in_progress | complete`; there is no spec status `blocked` and only an explicit green completion phase may write `complete`.
 
 ## WAL pragmas
 

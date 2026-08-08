@@ -168,7 +168,7 @@ class Tracer:
     def session_start(self, adw_id: str, engineer: str, adw_name: str | None = None) -> None:
         self.conn.execute(
             "INSERT INTO sessions (adw_id, status, engineer, started_at) VALUES (?,?,?,?) "
-            "ON CONFLICT(adw_id) DO UPDATE SET status='running'",
+            "ON CONFLICT(adw_id) DO UPDATE SET status='running', ended_at=NULL",
             (adw_id, "running", engineer, now_iso()),
         )
         if not adw_name:
@@ -186,7 +186,15 @@ class Tracer:
         self.conn.execute("UPDATE sessions SET request=? WHERE adw_id=?",
                           (request[:500], adw_id))
 
-    def session_finish(self, adw_id: str, ok: bool) -> None:
+    def session_finish(self, adw_id: str, ok: bool | None = None,
+                       status: str | None = None) -> None:
+        """Finalize as success/fail/blocked while preserving bool-call compatibility."""
+        if status is None:
+            if ok is None:
+                raise ValueError("session_finish requires ok or status")
+            status = "success" if ok else "fail"
+        if status not in {"success", "fail", "blocked"}:
+            raise ValueError(f"invalid terminal session status: {status!r}")
         ended = now_iso()
         # Finalize phases before their session so readers can never observe a
         # terminal session with a phase that still claims to be live. This also
@@ -200,7 +208,7 @@ class Tracer:
         )
         self.conn.execute(
             "UPDATE sessions SET status=?, ended_at=? WHERE adw_id=?",
-            ("success" if ok else "fail", ended, adw_id),
+            (status, ended, adw_id),
         )
         # A parent can be terminated before its extension's close callback. Do
         # not leave historical nested runs falsely live in that case.

@@ -1,5 +1,5 @@
 ---
-status: planned
+status: complete
 ---
 
 # Plan: Blocked-Run-Unterstützung aus `kios-mvp` übernehmen

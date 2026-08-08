@@ -11,6 +11,16 @@ TEMPLATE_WORKFLOW = SKILL_ROOT / "templates" / "adws" / "adw_scout_plan.py"
 TEMPLATE_SPECS = SKILL_ROOT / "templates" / "adws" / "adw_modules" / "specs.py"
 TEMPLATE_PLANNER = SKILL_ROOT / "templates" / "prompt_engineering" / "planner" / "user.md"
 TEMPLATE_MAINTENANCE_CONFIG = SKILL_ROOT / "templates" / "sssf.maintenance.config.yaml"
+BLOCKED_TEMPLATE_FILES = {
+    "adws/adw_modules/data_types.py": "adws/adw_modules/data_types.py",
+    "adws/adw_modules/agents.py": "adws/adw_modules/agents.py",
+    "adws/adw_modules/runner.py": "adws/adw_modules/runner.py",
+    "adws/adw_modules/tracer.py": "adws/adw_modules/tracer.py",
+    "adws/adw_modules/console.py": "adws/adw_modules/console.py",
+    "adws/adw_build_review.py": "adws/adw_build_review.py",
+    "prompt_engineering/builder/user.md": "adws/adw_data/prompt_engineering/builder/user.md",
+    "adws/tests/test_blocked.py": "adws/tests/test_blocked.py",
+}
 
 
 class ScoutPlanInstallTests(unittest.TestCase):
@@ -41,6 +51,11 @@ class ScoutPlanInstallTests(unittest.TestCase):
                 TEMPLATE_MAINTENANCE_CONFIG.read_bytes(),
                 installed_maintenance_config.read_bytes(),
             )
+            for source, destination in BLOCKED_TEMPLATE_FILES.items():
+                self.assertEqual(
+                    (SKILL_ROOT / "templates" / source).read_bytes(),
+                    (target / destination).read_bytes(),
+                )
             installed_justfile = (target / "justfile").read_text()
             self.assertIn("scout-plan", installed_justfile)
             self.assertIn("build *ARGS", installed_justfile)
@@ -49,8 +64,11 @@ class ScoutPlanInstallTests(unittest.TestCase):
             self.assertIn(".agents/skills/sssf/apps/visualizer", installed_justfile)
 
             installed.write_text("local customization\n")
+            installed_data_types = target / "adws" / "adw_modules" / "data_types.py"
+            installed_data_types.write_text("local blocked customization\n")
             self.run_installer(target)
             self.assertEqual("local customization\n", installed.read_text())
+            self.assertEqual("local blocked customization\n", installed_data_types.read_text())
 
             installed.unlink()
             self.run_installer(target)
@@ -67,6 +85,11 @@ class ScoutPlanInstallTests(unittest.TestCase):
                 TEMPLATE_MAINTENANCE_CONFIG.read_bytes(),
                 installed_maintenance_config.read_bytes(),
             )
+            for source, destination in BLOCKED_TEMPLATE_FILES.items():
+                self.assertEqual(
+                    (SKILL_ROOT / "templates" / source).read_bytes(),
+                    (target / destination).read_bytes(),
+                )
 
             listed = subprocess.run(
                 ["just", "--justfile", str(target / "justfile"), "--list"],

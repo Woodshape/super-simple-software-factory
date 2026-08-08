@@ -50,13 +50,22 @@ class Console:
         self._emit(f"[bold cyan]adw_id:[/bold cyan] [bold]{escape(adw_id)}[/bold]"
                    f"   [dim]engineer[/dim] {escape(engineer)}")
 
-    def session_finished(self, ok: bool, tokens: int, cost: float, db_path: str) -> None:
+    def session_finished(self, outcome: bool | str, tokens: int, cost: float,
+                         db_path: str) -> None:
         if self._finished:
             return
         self._finished = True
+        terminal = outcome if isinstance(outcome, str) else "success" if outcome else "fail"
+        if terminal not in {"success", "fail", "blocked"}:
+            raise ValueError(f"invalid console outcome: {terminal!r}")
         passed = sum(1 for r in self.results if r == "success")
-        status = "[green]✓ success[/green]" if ok else "[red]✗ fail[/red]"
-        rows = [f" [dim]status[/dim]   {status}",
+        styles = {
+            "success": ("[green]✓ success[/green]", "ADW complete", "green", "info"),
+            "fail": ("[red]✗ fail[/red]", "ADW complete", "red", "error"),
+            "blocked": ("[yellow]◆ blocked[/yellow]", "ADW blocked", "yellow", "warn"),
+        }
+        status_markup, title, border, level = styles[terminal]
+        rows = [f" [dim]status[/dim]   {status_markup}",
                 f" [dim]phases[/dim]   {passed}/{len(self.results)} passed",
                 f" [dim]tokens[/dim]   {tokens:,}",
                 f" [dim]cost[/dim]     ${cost:.4f}",
@@ -64,11 +73,11 @@ class Console:
                 f" [dim]db[/dim]       {escape(str(db_path))}",
                 f" [dim]next[/dim]     [bold]just phases {escape(self.adw_id)}[/bold]"]
         panel = Panel(Text.from_markup("\n".join(rows)),
-                      title="[bold]ADW complete[/bold]",
-                      border_style="green" if ok else "red", expand=False)
-        plain = (f"session {self.adw_id} {'success' if ok else 'fail'} · "
+                      title=f"[bold]{title}[/bold]",
+                      border_style=border, expand=False)
+        plain = (f"session {self.adw_id} {terminal} · "
                  f"{passed}/{len(self.results)} phases · {tokens:,} tokens · ${cost:.4f}")
-        self._emit(escape(plain), level="info" if ok else "error", renderable=panel)
+        self._emit(escape(plain), level=level, renderable=panel)
 
     # ── phases ──────────────────────────────────────────────────────────────
     def phase_started(self, phase: Phase) -> None:
@@ -123,9 +132,17 @@ class Console:
                        f"{escape(detail)}[/{style}]", level="info" if check.ok else "error")
 
     def envelope_summary(self, envelope: EnvelopeBase) -> None:
-        ok = envelope.status == "success"
-        line = (f"  {'[green]✓[/green]' if ok else '[red]✗[/red]'} "
-                f"{type(envelope).__name__} [dim]{escape(_clip(envelope.summary))}[/dim]")
-        self._emit(line, level="info" if ok else "error")
+        blocked = bool(getattr(envelope, "blocked", False))
+        ok = envelope.status == "success" or blocked
+        mark = "[yellow]✓[/yellow]" if blocked else "[green]✓[/green]" if ok else "[red]✗[/red]"
+        line = (f"  {mark} {type(envelope).__name__} "
+                f"[dim]{escape(_clip(envelope.summary))}[/dim]")
+        self._emit(line, level="warn" if blocked else "info" if ok else "error")
+        blocker = getattr(envelope, "external_blocker", None)
+        if blocker is not None:
+            detail = (f"{blocker.category} · owner {blocker.owner} · "
+                      f"action {blocker.required_action} · resume {blocker.resume_when}")
+            self._emit(f"    [yellow]blocked:[/yellow] [dim]{escape(_clip(detail))}[/dim]",
+                       level="warn")
         if envelope.artifacts:
             self._emit(f"    [dim]artifacts: {escape(_clip(', '.join(envelope.artifacts)))}[/dim]")

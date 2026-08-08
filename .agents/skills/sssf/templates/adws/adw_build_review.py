@@ -16,7 +16,8 @@ written, and rules on each requirement.
 
 Like the tester, the reviewer's phase succeeds when it RUNS and REPORTS. A
 rejection does not fail the phase; it fails the run, checked at the end, after
-the bounded revise loop has had its chances.
+the bounded revise loop has had its chances. An externally blocked initial
+build starts no reviewer; a blocked revision stops before the next review.
 """
 
 import argparse
@@ -24,12 +25,13 @@ import sys
 
 from adw_modules import agents, gates, session, utils
 from adw_modules.data_types import AgentCall, BuildOutput, PhaseParams, ReviewOutput
+from adw_modules.runner import BlockedRun
 
 REQUIRED_AGENTS = ["builder", "reviewer"]
 MAX_REVISION_LOOPS = 3
 
 
-def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw_id: str | None = None) -> int:
+def _workflow(prompt: str, config: str, adw_id: str | None) -> int:
     cfg = agents.load_config(config)
     agents.validate(cfg, REQUIRED_AGENTS)
     run = session.ensure(cfg, adw_id)
@@ -64,6 +66,15 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
 
     return run.finish(accepted=review is not None and review.approved,
                       reason=f"the reviewer never approved after {MAX_REVISION_LOOPS} revision(s)")
+
+
+def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml",
+         adw_id: str | None = None) -> int:
+    """Translate the runner's already-finalized blocked control signal to exit 2."""
+    try:
+        return _workflow(prompt, config, adw_id)
+    except BlockedRun as blocked:
+        return int(blocked.code or BlockedRun.exit_code)
 
 
 if __name__ == "__main__":

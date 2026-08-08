@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 PhaseKind = Literal["engineer", "agent", "code"]
 PhaseStatus = Literal["queued", "running", "success", "fail"]
@@ -91,9 +91,63 @@ class PlanOutput(EnvelopeBase):
     commit_message: str = ""
 
 
+class BlockerEvidence(BaseModel):
+    """Non-secret evidence that proves an external prerequisite is absent."""
+
+    model_config = {"extra": "forbid"}
+
+    source: str = Field(description="Repo path, command/response reference, or other non-secret source")
+    observation: str = Field(description="Fact established by the source; never include secrets or credentials")
+
+    @field_validator("source", "observation")
+    @classmethod
+    def _non_empty_evidence(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("blocker evidence fields must not be empty")
+        return text
+
+
+class ExternalBlocker(BaseModel):
+    """A prerequisite controlled outside the agent and required to resume."""
+
+    model_config = {"extra": "forbid"}
+
+    category: Literal["approval", "access", "decision", "external_dependency", "external_input"]
+    owner: str
+    required_action: str
+    resume_when: str
+    evidence: list[BlockerEvidence] = Field(min_length=1)
+
+    @field_validator("owner", "required_action", "resume_when")
+    @classmethod
+    def _non_empty_detail(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("external blocker owner, action, and resume condition must not be empty")
+        return text
+
+
 class BuildOutput(EnvelopeBase):
+    """Builder report; uniquely allowed to declare evidenced external blocking."""
+
+    status: Literal["success", "fail", "blocked"]
     changed_files: list[str] = Field(default_factory=list)
     commit_message: str = ""        # consumed by the git commit phase
+    external_blocker: ExternalBlocker | None = None
+
+    @model_validator(mode="after")
+    def _status_matches_blocker(self) -> BuildOutput:
+        if self.status == "blocked" and self.external_blocker is None:
+            raise ValueError("status='blocked' requires external_blocker")
+        if self.status != "blocked" and self.external_blocker is not None:
+            raise ValueError("external_blocker is only valid with status='blocked'")
+        return self
+
+    @property
+    def blocked(self) -> bool:
+        """Whether this validated report represents externally blocked delivery."""
+        return self.status == "blocked"
 
 
 class ScoutFinding(BaseModel):
