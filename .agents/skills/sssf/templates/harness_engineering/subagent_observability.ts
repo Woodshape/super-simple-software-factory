@@ -5,6 +5,30 @@ import { randomBytes } from "crypto";
 export const SSSF_SUBAGENT_CONTEXT_ENV = "SSSF_SUBAGENT_CONTEXT";
 export const SUBAGENT_PROTOCOL = "sssf.subagents.v1";
 const CLIP = 20_000;
+const PARENT_RESULT_CHARS = 8_000;
+
+export interface SubagentCompletion {
+	id: number;
+	turn: number;
+	prompt: string;
+	elapsedMs: number;
+	result: string;
+	resultPath?: string;
+}
+
+/** Build the bounded parent notification while preserving a route to the full result. */
+export function formatSubagentCompletion(completion: SubagentCompletion): string {
+	const turnLabel = completion.turn > 1 ? ` (Turn ${completion.turn})` : "";
+	const truncated = completion.result.length > PARENT_RESULT_CHARS;
+	const preview = completion.result.slice(0, PARENT_RESULT_CHARS);
+	const clippingNote = truncated ? "\n\n... [truncated]" : "";
+	const resultReference = truncated && completion.resultPath
+		? `\n\nFull result: ${completion.resultPath}`
+			+ "\nRead that file instead of continuing the subagent to recover truncated text."
+		: "";
+	return `Subagent #${completion.id}${turnLabel} finished "${completion.prompt}" in ${Math.round(completion.elapsedMs / 1000)}s.`
+		+ `\n\nResult:\n${preview}${clippingNote}${resultReference}`;
+}
 
 export interface TraceContext {
 	version: 1;

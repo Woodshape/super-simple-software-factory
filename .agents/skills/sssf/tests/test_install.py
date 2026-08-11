@@ -5,12 +5,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = SKILL_ROOT / "scripts" / "install.py"
 TEMPLATE_WORKFLOW = SKILL_ROOT / "templates" / "adws" / "adw_scout_plan.py"
 TEMPLATE_SPECS = SKILL_ROOT / "templates" / "adws" / "adw_modules" / "specs.py"
 TEMPLATE_PLANNER = SKILL_ROOT / "templates" / "prompt_engineering" / "planner" / "user.md"
 TEMPLATE_MAINTENANCE_CONFIG = SKILL_ROOT / "templates" / "sssf.maintenance.config.yaml"
+TEMPLATE_SCOUT_PROMPT = SKILL_ROOT / "templates" / "prompt_engineering" / "scout" / "system.md"
 BLOCKED_TEMPLATE_FILES = {
     "adws/adw_modules/data_types.py": "adws/adw_modules/data_types.py",
     "adws/adw_modules/agents.py": "adws/adw_modules/agents.py",
@@ -42,6 +45,10 @@ class ScoutPlanInstallTests(unittest.TestCase):
             installed_maintenance_config = (
                 target / "adws" / "adw_sssf_config" / "sssf.maintenance.config.yaml"
             )
+            installed_config = target / "adws" / "adw_sssf_config" / "sssf.config.yaml"
+            installed_scout_prompt = (
+                target / "adws" / "adw_data" / "prompt_engineering" / "scout" / "system.md"
+            )
 
             self.run_installer(target)
             self.assertEqual(TEMPLATE_WORKFLOW.read_bytes(), installed.read_bytes())
@@ -51,6 +58,15 @@ class ScoutPlanInstallTests(unittest.TestCase):
                 TEMPLATE_MAINTENANCE_CONFIG.read_bytes(),
                 installed_maintenance_config.read_bytes(),
             )
+            self.assertEqual(TEMPLATE_SCOUT_PROMPT.read_bytes(), installed_scout_prompt.read_bytes())
+            config = yaml.safe_load(installed_config.read_text())
+            scout = next(agent for agent in config["agents"] if agent["name"] == "scout")
+            self.assertEqual("medium", scout["thinking"])
+            self.assertNotIn("subagent_continue", scout["tools"])
+            scout_contract = installed_scout_prompt.read_text()
+            self.assertIn("at most four subagents", scout_contract)
+            self.assertIn("Never continue a subagent to recover truncated text", scout_contract)
+            self.assertIn("32 KiB", scout_contract)
             for source, destination in BLOCKED_TEMPLATE_FILES.items():
                 self.assertEqual(
                     (SKILL_ROOT / "templates" / source).read_bytes(),

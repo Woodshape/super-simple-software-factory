@@ -8,6 +8,7 @@ import {
   appendRaw,
   childPaths,
   createSubagentId,
+  formatSubagentCompletion,
   writeResult,
 } from "../../../templates/harness_engineering/subagent_observability.ts";
 
@@ -15,6 +16,22 @@ const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
 describe("nested extension telemetry", () => {
+  test("points truncated parent notifications at the complete persisted result", () => {
+    const resultPath = "/tmp/sessions/run/scout/subagents/child/turn-1/result.txt";
+    const message = formatSubagentCompletion({
+      id: 1,
+      turn: 1,
+      prompt: "inspect the package",
+      elapsedMs: 12_000,
+      result: "x".repeat(8_001),
+      resultPath,
+    });
+
+    expect(message).toContain("... [truncated]");
+    expect(message).toContain(`Full result: ${resultPath}`);
+    expect(message).toContain("Read that file instead of continuing the subagent to recover truncated text.");
+  });
+
   test("persists two interleaved children, lifecycle, cancellation, and continuation", () => {
     const root = mkdtempSync(join(tmpdir(), "sssf-child-"));
     dirs.push(root);

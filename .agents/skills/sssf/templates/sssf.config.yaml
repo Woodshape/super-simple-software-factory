@@ -81,13 +81,14 @@ agents:
       - write
 
   - name: scout
+    thinking: medium
     color: "#fbbf24"
     purpose: Find and report where things live; change nothing.
     prompt_engineering:
       system: adws/adw_data/prompt_engineering/scout/system.md
       user: adws/adw_data/prompt_engineering/scout/user.md
     harness_engineering:
-      - adws/adw_data/harness_engineering/subagents.ts    # registers the four subagent_* tools below
+      - adws/adw_data/harness_engineering/subagents.ts    # registers subagent tools; continue is intentionally filtered below
     writes: []                     # read-only, and now actually read-only: its findings
                                    # go to context_handoff/, which is runtime, not the repo
     tools:                         # search-heavy recon; write only so scout_findings.md lands without a bash heredoc
@@ -98,7 +99,6 @@ agents:
       - bash
       - write
       - subagent_create            # extension tools MUST be named here or they are filtered out
-      - subagent_continue
       - subagent_list
       - subagent_remove
 

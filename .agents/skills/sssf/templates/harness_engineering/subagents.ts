@@ -29,6 +29,7 @@ import {
 	appendRaw,
 	childPaths,
 	createSubagentId,
+	formatSubagentCompletion,
 	parseTraceContext,
 	writeResult,
 } from "./subagent_observability.ts";
@@ -342,7 +343,14 @@ export default function (pi: ExtensionAPI) {
 
 				pi.sendMessage({
 					customType: "subagent-result",
-					content: `Subagent #${state.id}${state.turnCount > 1 ? ` (Turn ${state.turnCount})` : ""} finished "${prompt}" in ${Math.round(state.elapsed / 1000)}s.\n\nResult:\n${result.slice(0, 8000)}${result.length > 8000 ? "\n\n... [truncated]" : ""}`,
+					content: formatSubagentCompletion({
+						id: state.id,
+						turn: state.turnCount,
+						prompt,
+						elapsedMs: state.elapsed,
+						result,
+						resultPath: paths?.turnResult(state.turnCount),
+					}),
 					display: true,
 				}, { deliverAs: "followUp", triggerTurn: true });
 				resolve();
